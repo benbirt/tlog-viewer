@@ -1,10 +1,9 @@
 # Weekly version updates, one pull request per ecosystem.
 # dependabot-auto-merge.yaml merges them once CI passes.
 #
-# Not covered here: the google-tlog-witness commit, .bazelversion and the Bazel
-# modules (Dependabot cannot evaluate a MODULE.bazel that uses rules_js), which
-# update-pins.yaml advances, and the Node version in MODULE.bazel, which
-# nothing does (it has to be one that the pinned rules_nodejs knows).
+# Not covered here: the google-tlog-witness commit, .bazelversion, the Bazel
+# modules (Dependabot cannot evaluate a MODULE.bazel that uses rules_js) and
+# the Node version, all of which update-pins.yaml advances.
 version: 2
 updates:
   # package.json and pnpm-lock.yaml: TypeScript and Node's types.
@@ -12,6 +11,11 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # Node's types follow the Node in MODULE.bazel, whose major version is
+      # moved by hand.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     groups:
       npm:
         patterns: ["*"]

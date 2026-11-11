@@ -95,6 +95,7 @@ once CI passes:
 | google-tlog-witness commit (the trust policy) | `update-pins.yaml` | daily |
 | `.bazelversion` | `update-pins.yaml` | daily |
 | Bazel modules (`bazel_dep` versions) | `update-pins.yaml` | daily |
+| Node, within its major version | `update-pins.yaml` | daily |
 | npm packages, GitHub Actions | Dependabot, merged by `dependabot-auto-merge.yaml` | weekly |
 
 `pages.yaml` deploys on every push to `main`, which includes those merges.

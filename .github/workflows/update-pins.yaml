@@ -1,8 +1,8 @@
 name: Update pins
 
 # Advances the versions that Dependabot cannot: the google-tlog-witness commit
-# that the trust policy is built from, the Bazel version, and the Bazel
-# modules. Each gets its own pull request, set to merge automatically once CI
+# that the trust policy is built from, the Bazel version, the Bazel modules,
+# and the Node version. Each gets its own pull request, set to merge automatically once CI
 # passes.
 #
 # The first is what brings new log instances, witnesses and key rotations to
@@ -27,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pin: [policy, bazel, modules]
+        pin: [policy, bazel, modules, node]
     concurrency:
       group: update-pins-${{ matrix.pin }}
     env:
@@ -85,6 +85,28 @@ jobs:
           {
             echo "TITLE=Update Bazel modules"
             echo "BODY=$(IFS=,; echo "${changes[*]}" | sed 's/,/, /g')"
+          } >> "$GITHUB_ENV"
+
+      # rules_nodejs can only fetch the Node versions its release lists, so
+      # take the newest of those in the major version already in use. Moving
+      # to a new major is left to a person: the tests lean on WebCrypto
+      # behaviour that has changed between them.
+      - name: Update the Node version
+        if: matrix.pin == 'node'
+        run: |
+          rules=$(sed -n -E 's/^bazel_dep\(name = "rules_nodejs", version = "([^"]+)".*/\1/p' MODULE.bazel)
+          old=$(sed -n -E 's/.*node_version = "([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' MODULE.bazel)
+          [[ -n "$rules" && -n "$old" ]] || { echo "::error::no rules_nodejs or Node version in MODULE.bazel"; exit 1; }
+          major=${old%%.*}
+          new=$(curl -fsS "https://raw.githubusercontent.com/bazel-contrib/rules_nodejs/v$rules/nodejs/private/node_versions.bzl" |
+            grep -oE "\"$major\.[0-9]+\.[0-9]+-linux_amd64\"" | tr -d '"' | sed 's/-linux_amd64$//' | sort -V | tail -n 1)
+          [[ "$new" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::rules_nodejs $rules lists no Node $major"; exit 1; }
+          if [ "$(printf '%s\n' "$old" "$new" | sort -V | tail -n 1)" = "$new" ]; then
+            sed -i -E 's/(node_version = ")[0-9.]+"/\1'"$new"'"/' MODULE.bazel
+          fi
+          {
+            echo "TITLE=Update Node to $new"
+            echo "BODY=Node $old to $new, the newest $major.x that rules_nodejs $rules can fetch."
           } >> "$GITHUB_ENV"
 
       - name: Check for changes
