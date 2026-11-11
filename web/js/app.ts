@@ -145,8 +145,13 @@ async function load(origin: string, attempt = 0): Promise<void> {
   const live = () => state === s;
 
   for (const a of $("logs").children) {
-    if ((a as HTMLElement).dataset.origin === origin) a.setAttribute("aria-current", "page");
-    else a.removeAttribute("aria-current");
+    if ((a as HTMLElement).dataset.origin === origin) {
+      a.setAttribute("aria-current", "page");
+      // On narrow screens the tabs scroll sideways; keep the current one in view.
+      a.scrollIntoView({ block: "nearest", inline: "nearest" });
+    } else {
+      a.removeAttribute("aria-current");
+    }
   }
   for (const id of STEPS) setStep(id, "", "Waiting…");
   $("cp-summary").textContent = "";
@@ -165,6 +170,7 @@ async function load(origin: string, attempt = 0): Promise<void> {
       if (!live()) return;
       if (e instanceof HttpError && e.status === 404) {
         setStep("step-log", "warn", "No checkpoint published.");
+        for (const id of STEPS.slice(1)) setStep(id, "", "Nothing to check.");
         notice(`${origin} is in the trust policy, but nothing is published at ${s.client.url("checkpoint")} yet.`);
         return;
       }
