@@ -57,6 +57,8 @@ interface LogState {
   refreshing: boolean;
   /** The log has contradicted itself; see reportInconsistency. */
   inconsistent: boolean;
+  /** Loading stopped on an error, so entries not yet loaded will not be. */
+  failed: boolean;
 }
 
 type StepId = "step-log" | "step-quorum" | "step-root" | "step-entries";
@@ -292,6 +294,7 @@ async function load(origin: string, attempt = 0): Promise<void> {
     result: null,
     refreshing: false,
     inconsistent: false,
+    failed: false,
   };
   state = s;
   const live = () => state === s;
@@ -387,6 +390,8 @@ async function load(origin: string, attempt = 0): Promise<void> {
     }
     console.error(e);
     notice(`Could not load ${origin}: ${e instanceof Error ? e.message : String(e)}`, true);
+    s.failed = true;
+    renderRows(); // rows still waiting for their entries now say so
     for (const id of STEPS) {
       if ($(id).dataset.state === "busy") setStep(id, "fail", "Failed.");
     }
@@ -811,7 +816,8 @@ function rowFor(s: LogState, index: number): HTMLElement {
   const open = cell("num", h("a", { href: href({ ...ui, entry: index }), "aria-label": `Entry ${index}` }, String(index)));
   if (!e) {
     row.classList.add("pending");
-    row.append(open, cell("rest", "Loading…"));
+    if (s.failed) row.classList.add("unloaded");
+    row.append(open, cell("rest", s.failed ? "Not loaded" : "Loading…"));
     return row;
   }
   const sm = e.summary;

@@ -6,6 +6,7 @@
   "packageManager": "pnpm@10.28.0",
   "devDependencies": {
     "@types/node": "24.9.2",
+    "playwright-core": "1.65.0",
     "typescript": "7.0.2"
   }
 }
