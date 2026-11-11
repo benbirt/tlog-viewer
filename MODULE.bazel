@@ -20,7 +20,7 @@ git_override(
 
 # Tests run the verifier under Node's WebCrypto; ML-DSA needs Node >= 24.7.
 node = use_extension("@rules_nodejs//nodejs:extensions.bzl", "node", dev_dependency = True)
-node.toolchain(node_version = "24.11.0")
+node.toolchain(node_version = "24.22.1")
 
 # pnpm, run through Bazel to change dependencies:
 #   bazel run -- @pnpm//:pnpm --dir $PWD add --save-dev --save-exact --lockfile-only <package>
