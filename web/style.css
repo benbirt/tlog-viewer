@@ -122,14 +122,24 @@ ul.tree .unsat { color: var(--muted); }
 .row { display: grid; grid-template-columns: 64px 138px minmax(130px, 1.1fr) 112px minmax(120px, 1.5fr) minmax(110px, 1fr) 92px 60px; gap: 12px; align-items: center; height: 38px; padding: 0 14px; }
 .row > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .row.head { height: 34px; font-size: 12px; font-weight: 600; color: var(--muted); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 1; background: var(--surface); border-radius: 10px 10px 0 0; }
-#rows { position: relative; }
-#rows a.row { position: absolute; left: 0; right: 0; color: inherit; text-decoration: none; border-bottom: 1px solid var(--line); }
+#rows a.row { color: inherit; text-decoration: none; border-bottom: 1px solid var(--line); }
+#rows a.row:last-child { border-bottom: 0; }
 #rows a.row:hover, #rows a.row:focus-visible { background: var(--row-hover); }
 #rows a.row.pending { color: var(--muted); }
 .row .num { font-family: var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
 #rows .c-digest, #rows .date { font-family: var(--mono); font-size: 12px; }
 .row .sub { color: var(--muted); }
 .empty { padding: 28px 14px; text-align: center; color: var(--muted); }
+.pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; margin-top: 12px; font-size: 13px; }
+.pager[hidden] { display: none; }
+.pager #page-status { margin: 0 6px; font-variant-numeric: tabular-nums; text-align: center; }
+.pager select { font: inherit; font-size: 13px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); margin-left: 8px; }
+.btn:disabled { opacity: 0.45; cursor: default; }
+.btn:disabled:hover { background: var(--surface); }
+@media (max-width: 640px) {
+  .pager #page-status { order: -1; flex-basis: 100%; }
+  .pager select { margin-left: 0; }
+}
 @media (max-width: 1000px) {
   .row { grid-template-columns: 56px 138px minmax(120px, 1fr) minmax(110px, 1.3fr) 92px 60px; }
   .row .c-digest, .row .c-publisher { display: none; }

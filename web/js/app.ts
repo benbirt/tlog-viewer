@@ -10,7 +10,7 @@ import { logOrigins, parsePolicy, type QuorumNode } from "./policy.js";
 import { POLICY_SOURCE, POLICY_TEXT } from "./policy_data.js";
 import { HttpError, LogClient, TILE_WIDTH, tilePath, tilesForSize } from "./tiles.js";
 
-const ROW_HEIGHT = 38;
+const DEFAULT_PAGE_SIZE = 50;
 const policy = parsePolicy(POLICY_TEXT);
 const origins = logOrigins(policy);
 
@@ -46,6 +46,9 @@ type StepId = "step-log" | "step-quorum" | "step-root" | "step-entries";
 const STEPS: StepId[] = ["step-log", "step-quorum", "step-root", "step-entries"];
 
 let state: LogState | null = null;
+
+/** The page of the filtered list on screen, counting from zero. */
+let page = 0;
 
 // ---------------------------------------------------------------------------
 // DOM helpers
@@ -142,6 +145,7 @@ async function load(origin: string, attempt = 0): Promise<void> {
     done: false,
   };
   state = s;
+  page = 0;
   const live = () => state === s;
 
   for (const a of $("logs").children) {
@@ -417,10 +421,9 @@ function applyFilter(): void {
   renderRows();
 }
 
-function rowFor(s: LogState, index: number, top: number): HTMLAnchorElement {
+function rowFor(s: LogState, index: number): HTMLAnchorElement {
   const e = s.entries[index];
   const a = h("a", { class: "row", role: "row", href: href(s.origin, index) });
-  a.style.top = `${top}px`;
   if (!e) {
     a.classList.add("pending");
     a.append(h("span", { class: "num" }, String(index)), h("span", null, "Loading…"));
@@ -441,25 +444,44 @@ function rowFor(s: LogState, index: number, top: number): HTMLAnchorElement {
   return a;
 }
 
-/** Renders only the rows near the viewport; the list scrolls with the page. */
+function pageSize(): number {
+  return Number($<HTMLSelectElement>("page-size").value) || DEFAULT_PAGE_SIZE;
+}
+
+/** Renders the current page of the filtered list. */
 function renderRows(): void {
   const s = state;
   const rows = $("rows");
   if (!s?.leafHashes) return;
-  if (s.view.length === 0) {
-    rows.style.height = "";
+  const size = pageSize();
+  const pages = Math.max(1, Math.ceil(s.view.length / size));
+  page = Math.max(0, Math.min(page, pages - 1));
+  const start = page * size;
+  const indices = s.view.slice(start, start + size);
+
+  $("pager").hidden = s.view.length === 0;
+  $("page-status").textContent =
+    `Page ${count(page + 1)} of ${count(pages)} · ${count(start + 1)}–${count(start + indices.length)} of ${count(s.view.length)}`;
+  $<HTMLButtonElement>("page-first").disabled = $<HTMLButtonElement>("page-prev").disabled = page === 0;
+  $<HTMLButtonElement>("page-next").disabled = $<HTMLButtonElement>("page-last").disabled = page === pages - 1;
+
+  if (indices.length === 0) {
     rows.replaceChildren(h("div", { class: "empty" }, s.size === 0 ? "This log has no entries yet." : "No entries match."));
     return;
   }
-  rows.style.height = `${s.view.length * ROW_HEIGHT}px`;
-  const top = rows.getBoundingClientRect().top;
-  const first = Math.max(0, Math.floor(-top / ROW_HEIGHT) - 8);
-  const last = Math.min(s.view.length, Math.ceil((window.innerHeight - top) / ROW_HEIGHT) + 8);
-  // Keep keyboard focus on a row across re-renders.
+  // Entries are still arriving while the log loads; keep keyboard focus on a
+  // row across the re-renders that causes.
   const focused = document.activeElement?.closest("#rows a.row")?.getAttribute("href");
-  const els = s.view.slice(first, last).map((index, i) => rowFor(s, index, (first + i) * ROW_HEIGHT));
+  const els = indices.map((index) => rowFor(s, index));
   rows.replaceChildren(...els);
   if (focused) els.find((el) => el.getAttribute("href") === focused)?.focus({ preventScroll: true });
+}
+
+function goToPage(target: number): void {
+  page = target;
+  renderRows();
+  // Bring the top of the new page into view if it has scrolled off.
+  if ($("entries").getBoundingClientRect().top < 0) $("entries").scrollIntoView();
 }
 
 // ---------------------------------------------------------------------------
@@ -553,15 +575,18 @@ function init(): void {
 
   for (const id of ["q", "f-validity", "f-publisher", "f-problems"]) {
     $(id).addEventListener("input", () => {
-      window.scrollTo({ top: Math.min(window.scrollY, $("entries").offsetTop) });
+      page = 0;
       applyFilter();
     });
   }
-  let raf = 0;
-  const onScroll = () => { raf ||= requestAnimationFrame(() => { raf = 0; renderRows(); }); };
-  window.addEventListener("scroll", onScroll, { passive: true });
-  window.addEventListener("resize", onScroll);
-  $("checkpoint").addEventListener("toggle", onScroll);
+  $("page-size").addEventListener("input", () => {
+    page = 0;
+    renderRows();
+  });
+  $("page-first").addEventListener("click", () => goToPage(0));
+  $("page-prev").addEventListener("click", () => goToPage(page - 1));
+  $("page-next").addEventListener("click", () => goToPage(page + 1));
+  $("page-last").addEventListener("click", () => goToPage(Infinity));
   $("refresh").addEventListener("click", () => void load(route().origin));
 
   const dialog = $<HTMLDialogElement>("detail");
