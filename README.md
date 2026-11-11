@@ -66,6 +66,20 @@ change them with pnpm through Bazel (see `MODULE.bazel`).
   `paic.google.com/log/0`, with the policy as it stood then, so the tests keep
   passing when the pinned policy changes.
 
+Beyond the table of entries:
+
+- **Signing keys.** A panel lists every key that signed an entry: how many
+  entries, the first and latest, and the publishers and workloads it signed
+  for, with keys first used in the last week marked. It is an inventory, not a
+  judgement of which keys to trust.
+- **Proofs.** An entry's drawer offers its [tlog-proof](https://c2sp.org/tlog-proof):
+  the index, inclusion proof and signed checkpoint in one file, which the
+  `policycheck` code in google-tlog-witness and `tlog.CheckRecord` accept.
+- **Claim titles.** Claims are identified by the URL of a document. Where that
+  is a Markdown file on GitHub, the drawer fetches it and shows its heading.
+  The titles are not part of the log and are not verified; opening an entry
+  therefore makes requests to raw.githubusercontent.com.
+
 The page looks for a new checkpoint every minute while it is visible. When the
 log has grown it fetches only the tiles that changed, checks that the new tree
 extends the one already verified (the leaf hashes in hand are kept, and must

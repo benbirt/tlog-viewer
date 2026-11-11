@@ -2,18 +2,20 @@
 // fetched is ever interpreted as markup.
 
 import { b64Encode, type Bytes, bytesEqual, hex } from "./bytes.js";
+import { claimDocumentUrl, claimTitle } from "./claims.js";
 import { logBaseUrl } from "./config.js";
 import { statementTextOf, type Summary } from "./entry.js";
 import { type Fault, faultById, FAULTS, faultyFetch } from "./faults.js";
 import { extendLeafHashes } from "./grow.js";
 import type { CheckedEntry } from "./ingest.js";
 import { verifyInteriorTiles } from "./interior.js";
-import { rootFromLeafHashes } from "./merkle.js";
+import { inclusionProof, rootFromLeafHashes } from "./merkle.js";
 import { type CheckpointResult, type SignatureResult, verifyCheckpoint } from "./note.js";
 import { logOrigins, parsePolicy, type QuorumNode } from "./policy.js";
 import { BUILD } from "./build_info.js";
 import { POLICY_SOURCE, POLICY_TEXT } from "./policy_data.js";
 import { WorkerPool } from "./pool.js";
+import { formatTlogProof } from "./proof.js";
 import { HttpError, LogClient, TILE_WIDTH, tilePath, type TileRef, tilesForSize } from "./tiles.js";
 
 const DEFAULT_PAGE_SIZE = 50;
@@ -150,6 +152,8 @@ interface Route {
   pageSize: number;
   /** Whether the checkpoint panel is open. */
   checkpoint: boolean;
+  /** Whether the signing keys panel is open. */
+  keys: boolean;
   /** The simulated failure in effect, by id. */
   fault: string | null;
 }
@@ -176,6 +180,7 @@ function readRoute(): Route {
     page: Math.max(0, (number("page") ?? 1) - 1),
     pageSize: pageSize !== null && PAGE_SIZES.includes(pageSize) ? pageSize : DEFAULT_PAGE_SIZE,
     checkpoint: p.get("checkpoint") === "1",
+    keys: p.get("keys") === "1",
     fault: faultById(p.get("fault"))?.id ?? null,
   };
 }
@@ -190,6 +195,7 @@ function href(r: Route): string {
   if (r.page > 0) p.set("page", String(r.page + 1));
   if (r.pageSize !== DEFAULT_PAGE_SIZE) p.set("per", String(r.pageSize));
   if (r.checkpoint) p.set("checkpoint", "1");
+  if (r.keys) p.set("keys", "1");
   if (r.entry !== null) p.set("entry", String(r.entry));
   if (r.fault) p.set("fault", r.fault);
   return "#" + p.toString().replaceAll("%2F", "/");
@@ -198,7 +204,7 @@ function href(r: Route): string {
 /** A log's default view, keeping any simulated failure in effect. */
 const logRoute = (origin: string): Route => ({
   origin, entry: null, q: "", validity: "", publisher: "", problems: false,
-  page: 0, pageSize: ui.pageSize, checkpoint: false, fault: ui.fault,
+  page: 0, pageSize: ui.pageSize, checkpoint: false, keys: false, fault: ui.fault,
 });
 
 /** The route on screen. Changes to it go through navigate(). */
@@ -223,6 +229,7 @@ function syncControls(): void {
   $<HTMLInputElement>("f-problems").checked = ui.problems;
   $<HTMLSelectElement>("page-size").value = String(ui.pageSize);
   $<HTMLDetailsElement>("checkpoint").open = ui.checkpoint;
+  $<HTMLDetailsElement>("keys").open = ui.keys;
 }
 
 /** The time the page takes it to be: now, unless a simulated failure moves it. */
@@ -304,6 +311,8 @@ async function load(origin: string, attempt = 0): Promise<void> {
   $("cp-summary").textContent = "";
   $("cp-body").replaceChildren();
   $("entries").hidden = true;
+  $("keys").hidden = true;
+  $("keys-body").replaceChildren();
   $<HTMLSelectElement>("f-publisher").length = 1;
   notice(null);
   // An open entry drawer shows checks from the previous load. Close it until
@@ -797,6 +806,7 @@ function applyFilter(): void {
     ? `${count(view.length)} of ${s.loaded < s.size ? count(s.loaded) + " loaded" : count(s.size)}`
     : `${count(s.size)} entries`;
   renderRows();
+  renderKeys();
 }
 
 function rowFor(s: LogState, index: number): HTMLElement {
@@ -869,6 +879,77 @@ function goToPage(target: number): void {
 }
 
 // ---------------------------------------------------------------------------
+// Signing keys
+
+/** A key first used this recently is marked as new. */
+const NEW_KEY_DAYS = 7;
+
+interface KeyUse {
+  fingerprint: string;
+  entries: number;
+  failed: number;
+  first: Entry;
+  latest: Entry;
+  publishers: Set<string>;
+  workloads: Set<string>;
+}
+
+/**
+ * Lists the keys that signed the log's entries. The page cannot say whether
+ * a key is one to trust, but it can show which keys are in use, for whom,
+ * and since when, which is what someone watching the log wants to notice.
+ */
+function renderKeys(): void {
+  const s = state;
+  if (!s?.leafHashes) return;
+  const keys = new Map<string, KeyUse>();
+  for (const e of s.entries) {
+    if (!e?.keyFingerprint) continue;
+    let k = keys.get(e.keyFingerprint);
+    if (!k) keys.set(e.keyFingerprint, k = { fingerprint: e.keyFingerprint, entries: 0, failed: 0, first: e, latest: e, publishers: new Set(), workloads: new Set() });
+    k.entries++;
+    if (!e.ok) k.failed++;
+    if (e.index < k.first.index) k.first = e;
+    if (e.index > k.latest.index) k.latest = e;
+    if (e.summary?.publisher) k.publishers.add(e.summary.publisher);
+    if (e.summary?.workload) k.workloads.add(e.summary.workload);
+  }
+  const isNew = (k: KeyUse) => {
+    const issued = Date.parse(k.first.summary?.issuedOn ?? "");
+    return !Number.isNaN(issued) && now() - issued < NEW_KEY_DAYS * 86400_000;
+  };
+  const all = [...keys.values()].sort((a, b) => b.latest.index - a.latest.index);
+  const fresh = all.filter(isNew).length;
+  $("keys").hidden = false;
+  $("keys-summary").textContent = `${count(all.length)} in use` +
+    (fresh > 0 ? ` · ${count(fresh)} first used in the last ${NEW_KEY_DAYS} days` : "") +
+    (s.done ? "" : " · still loading");
+  if (!ui.keys) return;
+
+  const when = (e: Entry) => h("span", null,
+    h("a", { href: href({ ...ui, entry: e.index }) }, `#${e.index}`), ` ${fmtTime(e.summary?.issuedOn ?? null)}`);
+  const rows = all.map((k) => h("tr", null,
+    h("td", null,
+      h("a", { href: href({ ...ui, q: k.fingerprint, page: 0, entry: null }), class: "mono", title: k.fingerprint }, k.fingerprint.slice(0, 16) + "…"),
+      isNew(k) ? " " : null, isNew(k) ? badge("new", "warn") : null),
+    h("td", null, count(k.entries)),
+    h("td", null, k.failed > 0 ? badge(count(k.failed), "bad") : "0"),
+    h("td", null, when(k.first)),
+    h("td", null, when(k.latest)),
+    h("td", null, [...k.publishers].sort().join(", ") || "—"),
+    h("td", null, count(k.workloads.size)),
+  ));
+  $("keys-body").replaceChildren(
+    h("p", { class: "muted" },
+      "The keys that signed this log's entries, by SHA-256 of the public key. This page has no list of endorser keys, " +
+      "so it does not check whether any of them is trusted. Dates are those the endorsements state."),
+    h("div", { class: "scroll-x" }, h("table", { class: "sigs" },
+      h("thead", null, h("tr", null,
+        ...["Key", "Entries", "Failed or unchecked", "First entry", "Latest entry", "Publishers", "Workloads"].map((t) => h("th", null, t)))),
+      h("tbody", null, ...rows))));
+}
+
+// ---------------------------------------------------------------------------
 // Entry detail
 
 function openDetailFromRoute(): void {
@@ -883,6 +964,31 @@ function openDetailFromRoute(): void {
   const e = s.entries[entry];
   $("detail-body").replaceChildren(...(e ? detailSections(s, e) : [h("p", { class: "muted" }, "Loading…")]));
   if (!dialog.open) dialog.showModal();
+}
+
+/** A place for a claim's title, filled in if and when its document has been read. */
+function claimHeading(type: string): HTMLElement {
+  const el = h("div", { class: "claim-title" });
+  void claimTitle(type).then((title) => { if (title) el.textContent = title; });
+  return el;
+}
+
+/** Offers an entry's tlog-proof for download, where there is one to give. */
+function proofControl(s: LogState, e: Entry): Child {
+  if (!e.inLog) return "None: the entry does not match its leaf hash.";
+  if (s.fault) return "Not offered while a failure is simulated.";
+  const button = h("button", { type: "button", class: "btn", id: "download-proof" }, "Download tlog-proof");
+  button.addEventListener("click", async () => {
+    if (!s.leafHashes || !s.checkpointRaw) return;
+    const hashes = await inclusionProof(s.leafHashes, e.index, s.size);
+    const text = formatTlogProof({ index: e.index, hashes, checkpoint: s.checkpointRaw });
+    const url = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
+    const a = h("a", { href: url, download: `${s.origin.replaceAll("/", "_")}-${e.index}.tlog-proof` });
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  });
+  return h("span", null, button,
+    h("span", { class: "muted proof-note" }, " The index, inclusion proof and signed checkpoint, for checking this entry offline."));
 }
 
 function detailSections(s: LogState, e: Entry): HTMLElement[] {
@@ -933,8 +1039,12 @@ function detailSections(s: LogState, e: Entry): HTMLElement[] {
         ["Artifact", sm.artifact],
         ["Predicate", sm.predicateType && maybeLink(sm.predicateType)],
       ])),
-      h("section", null, h("h3", null, `Claims (${sm.claims.length})`), h("ul", { class: "claims" },
-        ...sm.claims.map((c) => h("li", null, maybeLink(c.type),
+      h("section", null, h("h3", null, `Claims (${sm.claims.length})`),
+        sm.claims.some((c) => claimDocumentUrl(c.type) !== null)
+          ? h("p", { class: "muted claims-note" }, "Titles are the headings of the linked documents, fetched from GitHub. They are not part of the log.")
+          : null,
+        h("ul", { class: "claims" },
+        ...sm.claims.map((c) => h("li", null, claimHeading(c.type), maybeLink(c.type),
           c.annotations && kv(Object.entries(c.annotations).map(
             ([k, v]): [string, Child] => [k, typeof v === "string" ? v : JSON.stringify(v)])))))),
     );
@@ -948,6 +1058,7 @@ function detailSections(s: LogState, e: Entry): HTMLElement[] {
       ["Leaf index", String(e.index)],
       ["Leaf hash", mono(hex(e.leafHash))],
       ["Entry bundle", link(bundleUrl)],
+      ["Proof", proofControl(s, e)],
     ])),
   );
   const statementText = e.recordText === null ? null : statementTextOf(e.recordText);
@@ -1016,6 +1127,13 @@ function init(): void {
   $("page-last").addEventListener("click", () => goToPage(Infinity));
   $("refresh").addEventListener("click", () => void load(ui.origin));
 
+  const keys = $<HTMLDetailsElement>("keys");
+  keys.addEventListener("toggle", () => {
+    if (keys.open === ui.keys) return;
+    navigate({ keys: keys.open }, "replace");
+    renderKeys();
+    renderRows();
+  });
   const checkpoint = $<HTMLDetailsElement>("checkpoint");
   checkpoint.addEventListener("toggle", () => {
     if (checkpoint.open === ui.checkpoint) return;
