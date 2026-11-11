@@ -201,3 +201,11 @@ dialog#detail { overscroll-behavior: contain; }
   .checked { order: 4; flex-basis: 100%; }
   .checked:empty { display: none; }
 }
+
+#keys-body { padding: 4px 14px 14px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; font-size: 13px; }
+#keys-body p { max-width: 90ch; }
+.panel[hidden] { display: none; }
+.claim-title { font-weight: 600; }
+.claim-title:empty { display: none; }
+.claims-note { font-size: 12.5px; margin-bottom: 8px; }
+.proof-note { font-size: 12.5px; }

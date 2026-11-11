@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import type { Browser } from "playwright-core";
 import { FAULTS } from "../../web/js/faults.js";
+import { leafHash, rootFromInclusionProof } from "../../web/js/merkle.js";
+import { parseCheckpoint, parseNote, verifyCheckpoint } from "../../web/js/note.js";
+import { parsePolicy } from "../../web/js/policy.js";
+import { parseTlogProof } from "../../web/js/proof.js";
 import { launch, Viewer } from "./harness.js";
 import { buildWorld, PUBLISHERS, type World } from "./testlog.js";
 
@@ -338,4 +342,67 @@ viewerTest("an entry served altered is labelled as served, not as recorded", asy
   await v.page.locator("#rows .row a").first().click();
   await v.drawer(true);
   assert.match(await v.text("#detail-body details.raw > summary"), /Entry as served \(does not match its leaf hash\)/i);
+});
+
+viewerTest("the signing keys in use are listed, and lead to their entries", async (v) => {
+  await v.goto();
+  // The test log's entries are signed by two keys, both first used today.
+  assert.equal(await v.text("#keys-summary"), "2 in use · 2 first used in the last 7 days");
+  await v.page.click("#keys > summary");
+  await v.page.waitForFunction(() => location.hash.includes("keys=1"));
+  const rows = v.page.locator("#keys-body tbody tr");
+  assert.equal(await rows.count(), 2);
+  const cells = await rows.evaluateAll((trs) => trs.map((tr) => [...tr.children].map((td) => (td as HTMLElement).innerText.trim())));
+  assert.deepEqual(cells.map((c) => c[1]).sort(), ["100", "200"]);
+  assert.ok(cells.every((c) => /new$/.test(c[0]!) && c[2] === "0" && c[6] === "4"));
+  assert.match(await v.text("#keys-body"), /does not check whether any of them is trusted/);
+
+  // A key's link narrows the table to the entries it signed.
+  const entries = Number(cells[0]![1]);
+  await rows.first().locator("td a").first().click();
+  await v.page.waitForFunction(() => /^[0-9a-f]{64}$/.test(new URLSearchParams(location.hash.slice(1)).get("q") ?? ""));
+  assert.equal(await v.text("#count"), `${entries} of 300`);
+  assert.equal(await v.page.locator("#keys").getAttribute("open"), "");
+});
+
+viewerTest("an entry's tlog-proof can be downloaded and checks out offline", async (v, w) => {
+  await v.goto("#log=test.example/log/0&entry=123");
+  await v.drawer(true);
+  const [download] = await Promise.all([v.page.waitForEvent("download"), v.page.click("#download-proof")]);
+  assert.equal(download.suggestedFilename(), "test.example_log_0-123.tlog-proof");
+  const chunks: Buffer[] = [];
+  for await (const chunk of await download.createReadStream()) chunks.push(chunk as Buffer);
+  const proof = parseTlogProof(Buffer.concat(chunks).toString());
+
+  // With nothing but the proof, the entry and the policy: the checkpoint
+  // satisfies the policy, and the entry hashes up to its root.
+  assert.equal(proof.index, 123);
+  const result = await verifyCheckpoint(parsePolicy(w.policy), proof.checkpoint, { expectedOrigin: w.main.origin });
+  assert.deepEqual(result.problems, []);
+  const cp = parseCheckpoint(parseNote(proof.checkpoint).text);
+  assert.equal(cp.size, 300);
+  const root = await rootFromInclusionProof(await leafHash(w.main.entries[123]!), 123, cp.size, proof.hashes);
+  assert.deepEqual([...root], [...cp.hash]);
+  // The same proof does not vouch for a different entry.
+  const other = await rootFromInclusionProof(await leafHash(w.main.entries[124]!), 123, cp.size, proof.hashes);
+  assert.notDeepEqual([...other], [...cp.hash]);
+
+  // No proof is offered from simulated data.
+  await v.goto("#log=test.example/log/0&entry=123&fault=witness-signature");
+  await v.drawer(true);
+  assert.match(await v.text("#detail-body"), /Not offered while a failure is simulated/);
+  assert.equal(await v.page.locator("#download-proof").count(), 0);
+});
+
+viewerTest("claims are titled from the documents they link to, where those can be read", async (v) => {
+  const raw = "https://raw.githubusercontent.com/test-org/claims/main/docs/";
+  v.documents.set(raw + "claims/publisher.md", "<!-- licence -->\n\n# Publisher ID\n\nWho published it.\n");
+  v.documents.set(raw + "claim/31543.md", "# MPMs\n");
+  // workload.md is not served: its claim keeps its link and gets no title.
+  await v.goto("#log=test.example/log/0&entry=42");
+  await v.drawer(true);
+  await v.page.waitForFunction(() => [...document.querySelectorAll(".claim-title")].filter((el) => el.textContent).length === 2);
+  assert.deepEqual(await v.page.$$eval(".claim-title", (els) => els.map((el) => el.textContent)), ["Publisher ID", "", "MPMs"]);
+  assert.match(await v.text("#detail-body"), /Titles are the headings of the linked documents, fetched from GitHub\. They are not part of the log\./);
+  assert.equal(await v.page.locator("ul.claims a").count(), 3);
 });

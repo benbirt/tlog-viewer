@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; worker-src 'self'; style-src 'self'; connect-src https://www.gstatic.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; worker-src 'self'; style-src 'self'; connect-src https://www.gstatic.com https://raw.githubusercontent.com; base-uri 'none'; form-action 'none'">
 <title>PAIC log viewer</title>
 <link rel="stylesheet" href="style.css">
 <script type="module" src="js/app.js"></script>
@@ -34,6 +34,11 @@
   <details class="panel" id="checkpoint">
     <summary>Checkpoint <span id="cp-summary" class="muted"></span></summary>
     <div id="cp-body"></div>
+  </details>
+
+  <details class="panel" id="keys" hidden>
+    <summary>Signing keys <span id="keys-summary" class="muted"></span></summary>
+    <div id="keys-body"></div>
   </details>
 
   <div id="notice" role="status"></div>
