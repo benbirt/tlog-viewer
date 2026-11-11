@@ -1,8 +1,9 @@
 name: Update pins
 
 # Advances the versions that Dependabot cannot: the google-tlog-witness commit
-# that the trust policy is built from, and the Bazel version. Each gets its
-# own pull request, set to merge automatically once CI passes.
+# that the trust policy is built from, the Bazel version, and the Bazel
+# modules. Each gets its own pull request, set to merge automatically once CI
+# passes.
 #
 # The first is what brings new log instances, witnesses and key rotations to
 # the published viewer without anyone having to remember.
@@ -26,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pin: [policy, bazel]
+        pin: [policy, bazel, modules]
     concurrency:
       group: update-pins-${{ matrix.pin }}
     env:
@@ -61,6 +62,29 @@ jobs:
           {
             echo "TITLE=Update Bazel to $new"
             echo "BODY=https://github.com/bazelbuild/bazel/releases/tag/$new"
+          } >> "$GITHUB_ENV"
+
+      # Dependabot's Bazel support cannot resolve this module: it evaluates
+      # MODULE.bazel without package.json and pnpm-workspace.yaml, which the
+      # rules_js extensions read.
+      - name: Update the Bazel modules
+        if: matrix.pin == 'modules'
+        run: |
+          changes=()
+          while read -r name old; do
+            new=$(curl -fsS "https://bcr.bazel.build/modules/$name/metadata.json" |
+              jq -r '(.yanked_versions // {}) as $yanked | .versions[] | select($yanked[.] | not) | select(test("^[0-9]+(\\.[0-9]+)*$"))' |
+              sort -V | tail -n 1)
+            [ -n "$new" ] || { echo "::error::no released version of $name in the registry"; exit 1; }
+            # Only ever move forwards.
+            if [ "$new" != "$old" ] && [ "$(printf '%s\n' "$old" "$new" | sort -V | tail -n 1)" = "$new" ]; then
+              sed -i -E 's/^(bazel_dep\(name = "'"$name"'", version = ")[^"]+/\1'"$new"'/' MODULE.bazel
+              changes+=("$name $old to $new")
+            fi
+          done < <(sed -n -E 's/^bazel_dep\(name = "([^"]+)", version = "([^"]+)".*/\1 \2/p' MODULE.bazel | grep -v '^google-tlog-witness ')
+          {
+            echo "TITLE=Update Bazel modules"
+            echo "BODY=$(IFS=,; echo "${changes[*]}" | sed 's/,/, /g')"
           } >> "$GITHUB_ENV"
 
       - name: Check for changes
