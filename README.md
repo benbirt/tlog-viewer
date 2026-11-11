@@ -30,6 +30,12 @@ build takes `//policies/paic:prod-verifier` from the commit pinned in
 UI straight from the policy, so a log added upstream appears once the pin
 moves.
 
+Because the pin moves without review, the build checks everything the viewer
+will need from a policy: that the viewer's own parser accepts it, that every
+key is well formed with the key ID its bytes imply, that each log has a key the
+viewer can verify, and that the quorum can be met by witnesses it can verify.
+A policy that would fail in the browser fails the build instead.
+
 The policy names logs by origin only. Tile URLs follow the convention in
 `web/js/config.ts` (`https://www.gstatic.com/<origin>/`); a log served
 elsewhere needs a change there and in the `connect-src` of `web/index.html`.

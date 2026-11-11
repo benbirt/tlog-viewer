@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { newVerifier } from "../web/js/note.js";
 import { evaluateQuorum, logOrigins, parsePolicy } from "../web/js/policy.js";
 import { POLICY_SOURCE, POLICY_TEXT } from "../web/js/policy_data.js";
 
@@ -40,4 +41,25 @@ test("rejects malformed policies", () => {
   assert.throws(() => parsePolicy(`witness a ${k}\nwitness a ${k}\nquorum a\n`), /duplicate/);
   assert.throws(() => parsePolicy(`witness a w+00000000+AQAA\nquorum a\n`), /cosignature/);
   assert.throws(() => parsePolicy(`frobnicate\nquorum none\n`), /unknown keyword/);
+});
+
+test("every key in the baked-in policy is usable", async () => {
+  const p = parsePolicy(POLICY_TEXT);
+  // newVerifier checks each key's length and that its ID matches its bytes.
+  for (const { vkey } of [...p.logs, ...p.witnesses]) {
+    assert.ok((await newVerifier(vkey)).supported, vkey.name);
+  }
+});
+
+test("comments may be indented, and need no space after the #", () => {
+  const p = parsePolicy(`  # indented\n\t#tabbed\n#plain\n\nquorum none\n`);
+  assert.equal(p.quorum, "none");
+});
+
+test("rejects duplicate public keys and control characters", () => {
+  const key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+  // The same key bytes under two names, as a witness and as a log.
+  assert.throws(() => parsePolicy(`witness a w1+00000000+B${key.slice(1)}\nwitness b w2+11111111+B${key.slice(1)}\nquorum a\n`), /duplicate witness public key/);
+  assert.throws(() => parsePolicy(`log l1+00000000+A${key.slice(1)}\nlog l2+11111111+A${key.slice(1)}\nquorum none\n`), /duplicate log public key/);
+  assert.throws(() => parsePolicy(`quorum none\r\n`), /control character/);
 });

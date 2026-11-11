@@ -30,6 +30,8 @@ interface Entry extends DecodedEntry {
 /** Everything known about the log on screen; replaced wholesale on switching logs. */
 interface LogState {
   origin: string;
+  /** Cancels the requests of a load that has been superseded. */
+  abort: AbortController;
   client: LogClient;
   size: number;
   /** Set once the leaf hashes have been shown to hash to the checkpoint. */
@@ -73,6 +75,11 @@ function h<K extends keyof HTMLElementTagNameMap>(
 
 const EXTERNAL = { rel: "noopener noreferrer", target: "_blank" };
 const badge = (text: string, kind = "") => h("span", { class: `badge ${kind}` }, text);
+/** A badge that is only a symbol, with the words a screen reader should say. */
+const iconBadge = (symbol: string, kind: string, label: string) =>
+  h("span", { class: `badge ${kind}`, role: "img", "aria-label": label }, symbol);
+const checkBadge = (ok: boolean | null) =>
+  ok === true ? iconBadge("✓", "ok", "Passed") : ok === false ? iconBadge("✕", "bad", "Failed") : iconBadge("?", "warn", "Not checked");
 const mono = (text: string) => h("span", { class: "mono" }, text);
 const link = (url: string, text = url) => h("a", { href: url, ...EXTERNAL }, text);
 /** A link only when the text is an https URL; plain text otherwise. */
@@ -86,7 +93,29 @@ function kv(pairs: [string, Child][]): HTMLElement {
 }
 
 const fmtTime = (iso: string | null) => (iso ? iso.replace("T", " ").replace(/(:\d\d)(\.\d+)?Z$/, "$1") : "—");
-const fmtUnix = (s: number) => new Date(s * 1000).toISOString().replace("T", " ").replace(".000Z", " UTC");
+
+/** The latest Unix time, in seconds, that a Date can represent. */
+const MAX_UNIX_SECONDS = 8_640_000_000_000n;
+
+/** Formats Unix seconds from a signature, which may hold any 64-bit value. */
+function fmtUnix(s: bigint): string {
+  if (s <= 0n || s > MAX_UNIX_SECONDS) return `${s} (not a plausible time)`;
+  return new Date(Number(s) * 1000).toISOString().replace("T", " ").replace(".000Z", " UTC");
+}
+
+/** How long ago a Unix time was, in words. */
+function fmtAge(s: bigint, now = Date.now()): string {
+  if (s <= 0n || s > MAX_UNIX_SECONDS) return "at an implausible time";
+  const seconds = Math.round(now / 1000 - Number(s));
+  if (seconds < -120) return "in the future";
+  if (seconds < 90) return "just now";
+  const units: [number, string][] = [[86400, "day"], [3600, "hour"], [60, "minute"]];
+  for (const [size, name] of units) {
+    const n = Math.floor(seconds / size);
+    if (n >= 1) return `${count(n)} ${name}${n === 1 ? "" : "s"} ago`;
+  }
+  return "just now";
+}
 
 // ---------------------------------------------------------------------------
 // Routing
@@ -132,10 +161,17 @@ async function pool<T>(items: T[], limit: number, fn: (item: T) => Promise<void>
 // ---------------------------------------------------------------------------
 // Loading and verifying a log
 
+/** Set while load() closes the entry drawer, so that doing so keeps the URL. */
+let closingForReload = false;
+
 async function load(origin: string, attempt = 0): Promise<void> {
+  // Stop whatever the previous load still has in flight.
+  state?.abort.abort();
+  const abort = new AbortController();
   const s: LogState = {
     origin,
-    client: new LogClient(logBaseUrl(origin)),
+    abort,
+    client: new LogClient(logBaseUrl(origin), undefined, abort.signal),
     size: 0,
     leafHashes: null,
     entries: [],
@@ -164,6 +200,20 @@ async function load(origin: string, attempt = 0): Promise<void> {
   $("entries").hidden = true;
   $<HTMLSelectElement>("f-publisher").length = 1;
   notice(null);
+  // An open entry drawer shows checks from the previous load. Close it until
+  // this load has verified the log again; the entry stays in the URL, so the
+  // drawer reopens then.
+  const dialog = $<HTMLDialogElement>("detail");
+  if (dialog.open) {
+    closingForReload = true;
+    dialog.close();
+  }
+  $("detail-body").replaceChildren();
+
+  /** Marks the steps from `from` on as not reached. */
+  const skipSteps = (from: number) => {
+    for (const id of STEPS.slice(from)) setStep(id, "", "Not checked.");
+  };
 
   try {
     // 1 and 2: the checkpoint must satisfy the policy.
@@ -181,37 +231,58 @@ async function load(origin: string, attempt = 0): Promise<void> {
       }
       throw e;
     }
-    const result = await verifyCheckpoint(policy, raw);
+    const result = await verifyCheckpoint(policy, raw, origin);
     if (!live()) return;
     const cp = result.checkpoint;
     s.size = cp.size;
-    renderCheckpoint(s, result, raw);
+    renderCheckpoint(s, result);
 
-    const logSigs = result.signatures.filter((x) => x.role === "log");
     if (cp.origin !== origin) {
-      setStep("step-log", "fail", `Checkpoint is for ${cp.origin}, not ${origin}.`);
+      setStep("step-log", "fail", `The checkpoint served is for ${cp.origin}, not ${origin}.`);
+      skipSteps(1);
+      notice("The checkpoint is for a different log, so the log's contents are not shown.", true);
       return;
     }
-    if (result.logSigned && !logSigs.some((x) => x.status === "invalid")) {
-      const valid = logSigs.filter((x) => x.status === "valid").map((x) => x.algName);
-      const skipped = logSigs.filter((x) => x.status === "unsupported").map((x) => x.algName);
-      setStep("step-log", "ok", `Signed by the log (${valid.join(" + ")})` +
-        (skipped.length ? `; ${skipped.join(", ")} not supported by this browser.` : "."));
+
+    // A signature that fails beside ones that pass does not reject the
+    // checkpoint, but it is never shown as a clean pass either.
+    const logSigs = result.signatures.filter((x) => x.role === "log");
+    const logAlgs = (status: SignatureResult["status"]) =>
+      logSigs.filter((x) => x.status === status).map((x) => x.algName).join(" + ");
+    const logUnsupportedOnly = !result.logSigned && logAlgs("unsupported") !== "" && logAlgs("invalid") === "";
+    if (result.logSigned) {
+      setStep("step-log", logAlgs("invalid") ? "warn" : "ok", `Signed by the log (${logAlgs("valid")})` +
+        (logAlgs("invalid") ? `; its ${logAlgs("invalid")} signature is invalid` : "") +
+        (logAlgs("unsupported") ? `; ${logAlgs("unsupported")} not supported by this browser` : "") + ".");
+    } else if (logUnsupportedOnly) {
+      setStep("step-log", "fail", `The log signs with ${logAlgs("unsupported")} only, which this browser cannot verify.`);
     } else {
-      setStep("step-log", "fail", result.problems.filter((p) => !/quorum/.test(p)).join("; ") || "Not signed by the log.");
+      setStep("step-log", "fail", logSigs.length > 0
+        ? "The log's signature is invalid."
+        : "Not signed by any log key in the policy.");
     }
 
     const q = result.quorum;
     const witnessSigs = result.signatures.filter((x) => x.role === "witness");
-    const cosigners = witnessSigs.filter((x) => x.status === "valid").length;
+    const cosigners = witnessSigs.filter((x) => x.status === "valid");
+    const invalid = witnessSigs.filter((x) => x.status === "invalid").length;
     const unchecked = witnessSigs.filter((x) => x.status === "unsupported").length;
+    const latest = cosigners.reduce<bigint | null>(
+      (max, x) => (x.timestamp !== null && (max === null || x.timestamp > max) ? x.timestamp : max), null);
     const rule = q.kind === "group" ? `${q.count} of ${q.children.length} in “${q.name}”, ${q.threshold} required` : q.name;
-    setStep("step-quorum", q.satisfied ? "ok" : "fail",
-      `${cosigners} valid cosignature${cosigners === 1 ? "" : "s"}; ${rule}.` +
-      (unchecked ? ` ${unchecked} could not be checked in this browser.` : ""));
+    const quorumBlockedByBrowser = !q.satisfied && result.quorumPossible;
+    setStep("step-quorum", !q.satisfied ? "fail" : invalid > 0 ? "warn" : "ok",
+      `${cosigners.length} valid cosignature${cosigners.length === 1 ? "" : "s"}; ${rule}.` +
+      (latest !== null ? ` Last witnessed ${fmtAge(latest)}.` : "") +
+      (invalid > 0 ? ` ${invalid} cosignature${invalid === 1 ? " is" : "s are"} invalid.` : "") +
+      (unchecked > 0 ? ` ${unchecked} could not be checked in this browser.` : "") +
+      (quorumBlockedByBrowser ? " They would be enough to meet the quorum." : ""));
 
     if (!result.ok) {
-      notice("The checkpoint does not satisfy the trust policy, so the log's contents are not shown.", true);
+      skipSteps(2);
+      notice(logUnsupportedOnly || quorumBlockedByBrowser
+        ? "This browser cannot verify ML-DSA-44 signatures, which this checkpoint depends on, so the log's contents are not shown. A current version of Chrome can."
+        : `The checkpoint does not satisfy the trust policy (${result.problems.join("; ")}), so the log's contents are not shown.`, true);
       return;
     }
 
@@ -228,6 +299,7 @@ async function load(origin: string, attempt = 0): Promise<void> {
     if (!live()) return;
     if (!bytesEqual(root, cp.hash)) {
       setStep("step-root", "fail", `Recomputed ${b64Encode(root)}, checkpoint says ${b64Encode(cp.hash)}.`);
+      skipSteps(3);
       notice("The log's tiles do not hash to the witnessed checkpoint, so its contents are not shown.", true);
       return;
     }
@@ -257,6 +329,7 @@ async function load(origin: string, attempt = 0): Promise<void> {
     await pool(tiles.toReversed(), 4, async (t) => {
       if (!live()) return;
       const bundle = await s.client.entryBundle(t);
+      const wanted = route().entry;
       for (const [i, bytes] of bundle.entries()) {
         const index = t.index * TILE_WIDTH + i;
         const lh = await leafHash(bytes);
@@ -280,10 +353,16 @@ async function load(origin: string, attempt = 0): Promise<void> {
         const publisher = e.summary?.publisher;
         if (publisher && !s.publishers.has(publisher)) {
           s.publishers.add(publisher);
-          $<HTMLSelectElement>("f-publisher").append(new Option(publisher, publisher));
+          const select = $<HTMLSelectElement>("f-publisher");
+          const chosen = select.value;
+          select.length = 1;
+          select.append(...[...s.publishers].sort().map((p) => new Option(p, p)));
+          select.value = chosen;
         }
         s.entries[index] = e;
         s.loaded++;
+        // An entry opened by link shows as soon as it arrives, not at the end.
+        if (index === wanted) openDetailFromRoute();
       }
       updateEntriesStep(s);
       scheduleFilter();
@@ -342,7 +421,7 @@ function quorumTree(n: QuorumNode): HTMLElement {
     n.kind === "group" ? h("ul", null, ...n.children.map(quorumTree)) : null);
 }
 
-function renderCheckpoint(s: LogState, result: CheckpointResult, raw: string): void {
+function renderCheckpoint(s: LogState, result: CheckpointResult): void {
   const cp = result.checkpoint;
   $("cp-summary").textContent = `size ${cp.size} · ${b64Encode(cp.hash)}`;
 
@@ -371,7 +450,12 @@ function renderCheckpoint(s: LogState, result: CheckpointResult, raw: string): v
       result.quorum.kind === "none"
         ? h("p", null, "The policy requires no cosignatures.")
         : h("ul", { class: "tree" }, quorumTree(result.quorum))),
-    h("section", null, h("h3", null, "Checkpoint body"), h("pre", null, raw.slice(0, raw.indexOf("\n\n") + 1))),
+    h("section", null, h("h3", null, "Checkpoint body"),
+      // Exactly the text the signatures were checked over.
+      h("pre", null, result.text),
+      result.extensionsAuthenticated ? null : h("p", { class: "caveat" },
+        "The lines after the root hash are not covered by any log signature this browser verified, " +
+        "so whoever relayed the checkpoint could have changed them.")),
   );
 }
 
@@ -385,7 +469,12 @@ function haystack(index: number, e: DecodedEntry): string {
     e.keyFingerprint, ...s.claims.map((c) => c.type)].filter((x) => x != null).join("\n").toLowerCase();
 }
 
-type Validity = "valid" | "expired" | "future" | "unknown";
+/**
+ * Where now falls relative to the validity period an endorsement claims. This
+ * is the endorser's own statement about dates, not something verified, so it
+ * is worded and coloured differently from the checks.
+ */
+type Validity = "current" | "expired" | "future" | "unknown";
 
 function validity(summary: Summary | null, now = Date.now()): Validity {
   const nb = Date.parse(summary?.notBefore ?? "");
@@ -393,11 +482,11 @@ function validity(summary: Summary | null, now = Date.now()): Validity {
   if (Number.isNaN(nb) || Number.isNaN(na)) return "unknown";
   if (now < nb) return "future";
   if (now > na) return "expired";
-  return "valid";
+  return "current";
 }
 
 const VALIDITY_BADGE: Record<Validity, [string, string]> = {
-  valid: ["valid", "ok"], expired: ["expired", ""], future: ["not yet", "warn"], unknown: ["unknown", "warn"],
+  current: ["current", "plain"], expired: ["expired", ""], future: ["not yet", "warn"], unknown: ["unknown", "warn"],
 };
 
 let filterQueued = false;
@@ -436,27 +525,30 @@ function applyFilter(): void {
   renderRows();
 }
 
-function rowFor(s: LogState, index: number): HTMLAnchorElement {
+function rowFor(s: LogState, index: number): HTMLElement {
   const e = s.entries[index];
-  const a = h("a", { class: "row", role: "row", href: href(s.origin, index) });
+  const row = h("div", { class: "row", role: "row" });
+  const cell = (cls: string, ...c: Child[]) => h("span", { class: cls, role: "cell" }, ...c);
+  // The link sits in the first cell and is stretched over the row in CSS, so
+  // the whole row is clickable while remaining a link to assistive technology.
+  const open = cell("num", h("a", { href: href(s.origin, index), "aria-label": `Entry ${index}` }, String(index)));
   if (!e) {
-    a.classList.add("pending");
-    a.append(h("span", { class: "num" }, String(index)), h("span", null, "Loading…"));
-    return a;
+    row.classList.add("pending");
+    row.append(open, cell("rest", "Loading…"));
+    return row;
   }
   const sm = e.summary;
-  const cell = (cls: string, ...c: Child[]) => h("span", { class: cls, role: "cell" }, ...c);
-  a.append(
-    cell("num", String(index)),
+  row.append(
+    open,
     cell("date", fmtTime(sm?.issuedOn ?? null)),
     cell("", sm?.subjectName ?? (e.error ? "Unreadable entry" : "—")),
     cell("c-digest", sm?.subjectDigest ? sm.subjectDigest.slice(0, 12) + "…" : "—"),
     cell("c-workload", sm?.workload ?? "—", sm?.version ? h("span", { class: "sub" }, " · " + sm.version) : null),
     cell("c-publisher", sm?.publisher ?? "—"),
     cell("", badge(...VALIDITY_BADGE[validity(sm)])),
-    cell("c-ok", e.ok ? badge("✓", "ok") : badge("✕", "bad")),
+    cell("c-ok", checkBadge(e.ok)),
   );
-  return a;
+  return row;
 }
 
 function pageSize(): number {
@@ -486,10 +578,11 @@ function renderRows(): void {
   }
   // Entries are still arriving while the log loads; keep keyboard focus on a
   // row across the re-renders that causes.
-  const focused = document.activeElement?.closest("#rows a.row")?.getAttribute("href");
-  const els = indices.map((index) => rowFor(s, index));
-  rows.replaceChildren(...els);
-  if (focused) els.find((el) => el.getAttribute("href") === focused)?.focus({ preventScroll: true });
+  const focused = document.activeElement?.closest("#rows a")?.getAttribute("href");
+  rows.replaceChildren(...indices.map((index) => rowFor(s, index)));
+  if (focused) {
+    [...rows.querySelectorAll("a")].find((a) => a.getAttribute("href") === focused)?.focus({ preventScroll: true });
+  }
 }
 
 function goToPage(target: number): void {
@@ -518,8 +611,22 @@ function openDetailFromRoute(): void {
 
 function detailSections(s: LogState, e: Entry): HTMLElement[] {
   const sm = e.summary;
-  const check = (ok: boolean | null, text: string) => h("li", null,
-    ok === true ? badge("✓", "ok") : ok === false ? badge("✕", "bad") : badge("?", "warn"), h("span", null, text));
+  const check = (ok: boolean | null, text: string) => h("li", null, checkBadge(ok), h("span", null, text));
+  // Each check has three outcomes; say which, never implying a pass.
+  const contentHashText = e.checks.contentHash === true
+    ? "The recorded SHA-256 matches the statement."
+    : e.checks.contentHash === false
+      ? "The recorded SHA-256 does not match the statement."
+      : "No SHA-256 of the statement could be checked: the entry records none, or could not be decoded.";
+  const signatureText = e.checks.signature === true
+    ? "The ECDSA P-256 signature over the statement verifies under the key below. Whether that key is one to trust is not checked: this page has no list of endorser keys."
+    : e.checks.signature === false
+      ? e.keyError
+        ? `The signing key could not be read (${e.keyError}), so the signature verifies under nothing.`
+        : "The signature over the statement does not verify under the key below."
+      : e.keyPem
+        ? "The signature could not be checked: the key is not ECDSA P-256."
+        : "The signature was not checked: the entry could not be decoded.";
   const bundleIndex = Math.floor(e.index / TILE_WIDTH);
   const bundleWidth = Math.min(TILE_WIDTH, s.size - bundleIndex * TILE_WIDTH);
   const bundleUrl = s.client.url(tilePath("entries", bundleIndex, bundleWidth));
@@ -529,14 +636,8 @@ function detailSections(s: LogState, e: Entry): HTMLElement[] {
       check(e.inLog, e.inLog
         ? `Leaf ${e.index} of the tree whose root the log signed and the witnesses cosigned.`
         : "This entry does not match the leaf hash the log committed to."),
-      check(e.checks.contentHash, e.checks.contentHash === false
-        ? "The recorded SHA-256 does not match the statement."
-        : "The recorded SHA-256 matches the statement."),
-      check(e.checks.signature, e.checks.signature === true
-        ? "The ECDSA P-256 signature over the statement verifies under the key below."
-        : e.checks.signature === false
-          ? "The signature over the statement does not verify under the key below."
-          : "The signature could not be checked (the key is not ECDSA P-256)."),
+      check(e.checks.contentHash, contentHashText),
+      check(e.checks.signature, signatureText),
       e.error ? check(false, `Could not be decoded: ${e.error}`) : null,
     )),
   ];
@@ -576,6 +677,12 @@ function detailSections(s: LogState, e: Entry): HTMLElement[] {
   if (e.statementText) {
     sections.push(h("section", null, h("h3", null, "Statement"), h("pre", null, e.statementText)));
   }
+  if (e.recordText) {
+    // Everything needed to re-check the entry by hand: its leaf hash is
+    // SHA-256 of a zero byte followed by exactly this text.
+    sections.push(h("details", { class: "raw" },
+      h("summary", null, "Log entry as recorded"), h("pre", { class: "wrap" }, e.recordText)));
+  }
   return sections;
 }
 
@@ -606,6 +713,11 @@ function init(): void {
 
   const dialog = $<HTMLDialogElement>("detail");
   dialog.addEventListener("close", () => {
+    // Closed by load(), not by the reader: the entry stays in the URL.
+    if (closingForReload) {
+      closingForReload = false;
+      return;
+    }
     if (state && route().entry !== null) history.pushState(null, "", href(state.origin));
   });
   dialog.addEventListener("click", (ev) => { if (ev.target === dialog) dialog.close(); });

@@ -39,9 +39,16 @@ export interface Verifier {
   name: string;
   keyId: number;
   algName: string;
+  /** Whether this platform can verify the key's algorithm at all. */
+  supported: boolean;
+  /**
+   * Whether a signature covers the whole note text. ML-DSA-44 cosignatures
+   * sign only the origin, size and root hash, not any extension lines.
+   */
+  coversText: boolean;
   verify(text: string, checkpoint: Checkpoint, sig: Bytes): Promise<VerifyStatus>;
   /** The cosignature time in Unix seconds; null for untimestamped signatures. */
-  timestamp(sig: Bytes): number | null;
+  timestamp(sig: Bytes): bigint | null;
 }
 
 export interface SignatureResult {
@@ -52,15 +59,32 @@ export interface SignatureResult {
   witness: string | null;
   algName: string | null;
   status: VerifyStatus | "unknown-key";
-  timestamp: number | null;
+  /** Unix seconds, for valid timestamped cosignatures. */
+  timestamp: bigint | null;
 }
 
 export interface CheckpointResult {
   checkpoint: Checkpoint;
+  /** The note text the signatures were checked over. */
+  text: string;
   signatures: SignatureResult[];
   logSigned: boolean;
   quorum: QuorumNode;
+  /**
+   * Whether the quorum would be met if the cosignatures this platform cannot
+   * check were all valid: distinguishes a browser limitation from a
+   * checkpoint that was never witnessed.
+   */
+  quorumPossible: boolean;
+  /**
+   * False if the checkpoint has extension lines that no valid log signature
+   * covers, so anyone relaying the checkpoint could have altered them.
+   */
+  extensionsAuthenticated: boolean;
+  /** Reasons the checkpoint is rejected. */
   problems: string[];
+  /** Anomalies that do not invalidate it, such as a bad signature beside good ones. */
+  warnings: string[];
   ok: boolean;
 }
 
@@ -73,7 +97,8 @@ export function parseNote(raw: string): Note {
   if (!sigBlock.endsWith("\n")) throw new Error("malformed note: missing final newline");
   const sigs: NoteSignature[] = [];
   for (const line of sigBlock.slice(0, -1).split("\n")) {
-    const m = /^— (\S+) (\S+)$/.exec(line);
+    // Key names contain no whitespace and no "+".
+    const m = /^\u2014 ([^\s+]+) (\S+)$/u.exec(line);
     if (!m) throw new Error("malformed note: bad signature line");
     const bytes = b64Decode(m[2]!);
     if (bytes.length < 5) throw new Error("malformed note: short signature");
@@ -96,7 +121,11 @@ export function parseCheckpoint(text: string): Checkpoint {
   if (!Number.isSafeInteger(size)) throw new Error("malformed checkpoint: size too large");
   const hash = b64Decode(hashText);
   if (hash.length !== 32) throw new Error("malformed checkpoint: bad root hash");
-  return { origin, size, hash, extensions: lines.slice(3, -1) };
+  const extensions = lines.slice(3, -1);
+  if (extensions.some((l) => l === "" || /[\x00-\x1f\x7f]/.test(l))) {
+    throw new Error("malformed checkpoint: bad extension line");
+  }
+  return { origin, size, hash, extensions };
 }
 
 async function importKey(format: "raw" | "spki", data: Bytes, name: string): Promise<CryptoKey | null> {
@@ -108,7 +137,7 @@ async function importKey(format: "raw" | "spki", data: Bytes, name: string): Pro
   }
 }
 
-const cosignatureTime = (sig: Bytes): number | null => (sig.length >= 8 ? Number(view(sig).getBigUint64(0)) : null);
+const cosignatureTime = (sig: Bytes): bigint | null => (sig.length >= 8 ? view(sig).getBigUint64(0) : null);
 
 /** Builds a verifier for a vkey, checking that its key ID is the right one. */
 export async function newVerifier(vkey: VKey): Promise<Verifier> {
@@ -123,6 +152,8 @@ export async function newVerifier(vkey: VKey): Promise<Verifier> {
       const k = await importKey("raw", key, "Ed25519");
       return {
         ...base,
+        supported: k !== null,
+        coversText: true,
         timestamp: () => null,
         async verify(text, _checkpoint, sig) {
           if (!k) return "unsupported";
@@ -137,10 +168,13 @@ export async function newVerifier(vkey: VKey): Promise<Verifier> {
       const k = await importKey("raw", key, "Ed25519");
       return {
         ...base,
+        supported: k !== null,
+        coversText: true,
         timestamp: cosignatureTime,
         async verify(text, _checkpoint, sig) {
           if (!k) return "unsupported";
           if (sig.length !== 8 + 64) return "invalid";
+          // The time is formatted from the full 64-bit value, not a float.
           const msg = utf8Encode(`cosignature/v1\ntime ${cosignatureTime(sig)}\n${text}`);
           const ok = await crypto.subtle.verify({ name: "Ed25519" }, k, sig.subarray(8), msg);
           return ok ? "valid" : "invalid";
@@ -153,6 +187,8 @@ export async function newVerifier(vkey: VKey): Promise<Verifier> {
       const nameBytes = utf8Encode(name);
       return {
         ...base,
+        supported: k !== null,
+        coversText: false,
         timestamp: cosignatureTime,
         async verify(_text, checkpoint, sig) {
           if (!k) return "unsupported";
@@ -174,35 +210,49 @@ export async function newVerifier(vkey: VKey): Promise<Verifier> {
       };
     }
     default:
-      return { ...base, timestamp: () => null, verify: async () => "unsupported" };
+      return { ...base, supported: false, coversText: false, timestamp: () => null, verify: async () => "unsupported" };
   }
 }
 
 /**
- * Applies a policy's checkpoint validity rule to a raw signed checkpoint:
- * signed by one of the policy's logs whose key name is the origin, and
- * cosigned according to the quorum rule.
+ * Applies a policy's checkpoint validity rule to a raw signed checkpoint: it
+ * must be signed by one of the policy's logs whose key name is the origin,
+ * and cosigned according to the quorum rule. If `expectedOrigin` is given,
+ * the checkpoint must also be for that log, so that one log's checkpoint
+ * cannot stand in for another's.
+ *
+ * As in the reference implementation, a signature that fails to verify does
+ * not by itself reject a checkpoint that other signatures make valid: a
+ * quorum exists to tolerate a faulty witness. Such signatures are reported in
+ * `warnings`.
  */
-export async function verifyCheckpoint(policy: Policy, raw: string): Promise<CheckpointResult> {
+export async function verifyCheckpoint(policy: Policy, raw: string, expectedOrigin?: string): Promise<CheckpointResult> {
   const note = parseNote(raw);
   const checkpoint = parseCheckpoint(note.text);
 
   type Known = { role: "log" | "witness"; witness: string | null; vkey: VKey };
   const known = new Map<string, Known>();
   const keyOf = (name: string, keyId: number) => `${keyId} ${name}`;
+  const add = (k: Known) => {
+    const id = keyOf(k.vkey.name, k.vkey.keyId);
+    // A key ID is a 32-bit hint, not an identity. Refuse to guess between
+    // two policy keys that share a name and an ID.
+    if (known.has(id)) throw new Error(`policy has ambiguous keys for ${k.vkey.name}`);
+    known.set(id, k);
+  };
   for (const log of policy.logs) {
-    if (log.vkey.name !== checkpoint.origin) continue;
-    known.set(keyOf(log.vkey.name, log.vkey.keyId), { role: "log", witness: null, vkey: log.vkey });
+    if (log.vkey.name === checkpoint.origin) add({ role: "log", witness: null, vkey: log.vkey });
   }
-  for (const w of policy.witnesses) {
-    known.set(keyOf(w.vkey.name, w.vkey.keyId), { role: "witness", witness: w.name, vkey: w.vkey });
-  }
+  for (const w of policy.witnesses) add({ role: "witness", witness: w.name, vkey: w.vkey });
 
   const signatures: SignatureResult[] = [];
   const seen = new Set<string>();
   const validWitnesses = new Set<string>();
+  const uncheckedWitnesses = new Set<string>();
   const problems: string[] = [];
+  const warnings: string[] = [];
   let logSigned = false;
+  let textSigned = false;
   for (const s of note.sigs) {
     const id = keyOf(s.name, s.keyId);
     const k = known.get(id);
@@ -211,23 +261,33 @@ export async function verifyCheckpoint(policy: Policy, raw: string): Promise<Che
       algName: null, status: "unknown-key", timestamp: null,
     };
     signatures.push(row);
-    if (!k) continue;
+    // A checkpoint must not carry two signature lines with the same key
+    // name and ID, whether or not the key is one we know.
     if (seen.has(id)) {
-      row.status = "invalid";
-      problems.push(`duplicate signature from ${s.name}`);
+      if (k) row.status = "invalid";
+      problems.push(`more than one signature line from ${s.name}`);
       continue;
     }
     seen.add(id);
+    if (!k) continue;
     const v = await newVerifier(k.vkey);
     row.algName = v.algName;
     row.status = await v.verify(note.text, checkpoint, s.sig);
-    if (row.status === "invalid") problems.push(`invalid signature from ${s.name} (${v.algName})`);
+    if (row.status === "invalid") warnings.push(`invalid signature from ${s.name} (${v.algName})`);
+    if (row.status === "unsupported" && k.witness !== null) uncheckedWitnesses.add(k.witness);
     if (row.status !== "valid") continue;
     row.timestamp = v.timestamp(s.sig);
-    if (k.role === "log") logSigned = true;
-    else if (k.witness !== null) validWitnesses.add(k.witness);
+    if (k.role === "log") {
+      logSigned = true;
+      textSigned ||= v.coversText;
+    } else if (k.witness !== null) {
+      validWitnesses.add(k.witness);
+    }
   }
 
+  if (expectedOrigin !== undefined && checkpoint.origin !== expectedOrigin) {
+    problems.push(`checkpoint is for ${checkpoint.origin}, not ${expectedOrigin}`);
+  }
   if (!policy.logs.some((l) => l.vkey.name === checkpoint.origin)) {
     problems.push(`origin ${checkpoint.origin} is not a log in the policy`);
   } else if (!logSigned) {
@@ -235,5 +295,16 @@ export async function verifyCheckpoint(policy: Policy, raw: string): Promise<Che
   }
   const quorum = evaluateQuorum(policy, validWitnesses);
   if (!quorum.satisfied) problems.push("witness quorum not met");
-  return { checkpoint, signatures, logSigned, quorum, problems, ok: problems.length === 0 };
+  return {
+    checkpoint,
+    text: note.text,
+    signatures,
+    logSigned,
+    quorum,
+    quorumPossible: evaluateQuorum(policy, new Set([...validWitnesses, ...uncheckedWitnesses])).satisfied,
+    extensionsAuthenticated: checkpoint.extensions.length === 0 || textSigned,
+    problems,
+    warnings,
+    ok: problems.length === 0,
+  };
 }

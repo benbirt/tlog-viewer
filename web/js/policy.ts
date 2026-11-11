@@ -1,6 +1,6 @@
 // Parser and quorum evaluation for https://c2sp.org/tlog-policy files.
 
-import { b64Decode, type Bytes } from "./bytes.js";
+import { b64Decode, type Bytes, hex } from "./bytes.js";
 
 export const ALG_ED25519 = 0x01;
 export const ALG_ED25519_COSIG = 0x04;
@@ -59,6 +59,7 @@ export function parseVKey(text: string): VKey {
   const second = text.indexOf("+", first + 1);
   if (first <= 0 || second < 0) throw new Error(`malformed vkey: ${text.slice(0, 60)}`);
   const name = text.slice(0, first);
+  if (/[\s\x00-\x1f\x7f]/.test(name)) throw new Error(`malformed key name in vkey: ${text.slice(0, 60)}`);
   const idHex = text.slice(first + 1, second);
   if (!/^[0-9a-f]{8}$/.test(idHex)) throw new Error(`malformed key id in vkey for ${name}`);
   const raw = b64Decode(text.slice(second + 1));
@@ -67,14 +68,20 @@ export function parseVKey(text: string): VKey {
 }
 
 export function parsePolicy(text: string): Policy {
+  // The only control characters a policy may contain are tab and newline.
+  if (/[\x00-\x08\x0b-\x1f\x7f]/.test(text)) throw new Error("policy contains a control character");
   const logs: Log[] = [];
   const witnesses: Witness[] = [];
   const groups: Group[] = [];
   let quorum: string | null = null;
   const names = new Set<string>();
+  // Two vkeys wrapping the same public key are duplicates, whatever their names.
+  const logKeys = new Set<string>();
+  const witnessKeys = new Set<string>();
 
   text.split("\n").forEach((line, i) => {
-    if (line.trim() === "" || line.startsWith("#")) return;
+    const fields = line.split(/[ \t]+/).filter((f) => f !== "");
+    if (fields[0] === undefined || fields[0].startsWith("#")) return;
     const fail = (msg: string): never => {
       throw new Error(`line ${i + 1}: ${msg}`);
     };
@@ -83,12 +90,15 @@ export function parsePolicy(text: string): Policy {
       if (names.has(name)) fail(`duplicate name ${name}`);
       names.add(name);
     };
-    const [keyword, ...args] = line.trim().split(/[ \t]+/);
+    const [keyword, ...args] = fields;
     switch (keyword) {
       case "log": {
         const [vkey, url] = args;
         if (vkey === undefined || args.length > 2) return fail("malformed log line");
-        logs.push({ vkey: parseVKey(vkey), url: url ?? null });
+        const parsed = parseVKey(vkey);
+        if (logKeys.has(hex(parsed.key))) fail(`duplicate log public key ${parsed.name}`);
+        logKeys.add(hex(parsed.key));
+        logs.push({ vkey: parsed, url: url ?? null });
         break;
       }
       case "witness": {
@@ -99,6 +109,8 @@ export function parsePolicy(text: string): Policy {
         if (vkey.alg !== ALG_ED25519_COSIG && vkey.alg !== ALG_MLDSA44) {
           fail(`witness ${name} does not use a cosignature key type`);
         }
+        if (witnessKeys.has(hex(vkey.key))) fail(`duplicate witness public key ${name}`);
+        witnessKeys.add(hex(vkey.key));
         witnesses.push({ name, vkey, url: url ?? null });
         break;
       }
