@@ -52,11 +52,18 @@ runtime dependencies. TypeScript and Node's types are the only npm packages;
 change them with pnpm through Bazel (see `MODULE.bazel`).
 
 - `web/js/policy.ts`, `note.ts`, `merkle.ts`, `tiles.ts`, `interior.ts`,
-  `entry.ts` — the verifier, with no DOM dependencies.
+  `grow.ts`, `entry.ts` — the verifier, with no DOM dependencies.
 - `web/js/app.ts` — the UI.
 - `tests/testdata/` — a real checkpoint, tiles and entries captured from
   `paic.google.com/log/0`, with the policy as it stood then, so the tests keep
   passing when the pinned policy changes.
+
+The page looks for a new checkpoint every minute while it is visible. When the
+log has grown it fetches only the tiles that changed, checks that the new tree
+extends the one already verified (the leaf hashes in hand are kept, and must
+hash with the new ones to the new root), and adds the new entries. If the log
+contradicts what it showed before, by changing a published leaf or presenting
+a tree that is not an extension, the page says so and stops following it.
 
 Everything about the view is kept in the address: the log, search and filters,
 page, whether the checkpoint panel is open and which entry's drawer is open. Any

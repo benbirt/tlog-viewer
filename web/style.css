@@ -193,3 +193,9 @@ dialog#detail { overscroll-behavior: contain; }
 #debug p { margin: 8px 0; }
 #debug ul { margin: 0; padding-left: 18px; display: grid; gap: 4px; max-width: 90ch; }
 #debug a[aria-current] { font-weight: 700; }
+
+.checked { font-size: 12.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+@media (max-width: 700px) {
+  .checked { order: 4; flex-basis: 100%; }
+  .checked:empty { display: none; }
+}
