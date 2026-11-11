@@ -21,8 +21,8 @@
 
 <main class="wrap">
   <div id="debug-banner" class="notice bad debug" role="alert" hidden></div>
-  <p class="lede">Project Oak endorsements published to the PAIC logs. Every check is run here, in this
-    browser: a tick means this page verified it, not that someone else said so.</p>
+  <p class="lede">Project Oak endorsements published to the PAIC logs. Every check runs in this browser.
+    A pass means this page verified it, not that another party asserted it.</p>
 
   <section aria-label="Verification" class="steps" id="steps">
     <div class="step" id="step-log"><span class="mark" aria-hidden="true"></span><div><h2>Log signature</h2><p>Waiting…</p></div></div>
@@ -40,7 +40,7 @@
 
   <section aria-label="Entries" id="entries" hidden>
     <div class="toolbar">
-      <input id="q" type="search" placeholder="Search subject, digest, workload, version, claim, key…" aria-label="Search entries" autocomplete="off" spellcheck="false">
+      <input id="q" type="search" placeholder="Search subject, SHA-256, workload, version, claim, key…" aria-label="Search entries" autocomplete="off" spellcheck="false">
       <select id="f-validity" aria-label="Validity period">
         <option value="">Any validity period</option>
         <option value="current">Current</option>
@@ -49,7 +49,7 @@
         <option value="unknown">Unknown dates</option>
       </select>
       <select id="f-publisher" aria-label="Publisher"><option value="">Any publisher</option></select>
-      <label class="check"><input id="f-problems" type="checkbox"> Failed checks only</label>
+      <label class="check"><input id="f-problems" type="checkbox"> Failed or unchecked only</label>
       <span id="count" class="muted" aria-live="polite"></span>
     </div>
     <div class="table" role="table" aria-label="Log entries">
@@ -92,12 +92,12 @@
 <footer class="wrap foot">
   <p>Trust policy: <span id="policy-source"></span>. Log and witness keys are compiled into this page.</p>
   <p>This page: <span id="build"></span></p>
-  <p>An entry's signature check shows that the endorsement was signed by the key published alongside it.
-    Whether that key is one you should trust is not something this page can tell you.</p>
+  <p>An entry's signature check shows only that the endorsement was signed by the key recorded with it.
+    This page has no list of endorser keys, so it does not check whether that key is trusted.</p>
   <details id="debug">
     <summary>Debug: simulate a failure</summary>
-    <p>Each of these alters the log's data inside this page, after it is fetched, to show how the page
-      responds. None can make a check pass. The choice is kept in the address, so a view can be shared.</p>
+    <p>Each option simulates a failure inside this browser to show how the page responds. None can
+      make a check pass. The selection is kept in the URL so the view can be shared.</p>
     <ul id="debug-list"></ul>
   </details>
 </footer>
