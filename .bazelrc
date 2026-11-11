@@ -3,3 +3,6 @@ common --incompatible_strict_action_env
 common --@aspect_rules_ts//ts:skipLibCheck=always
 common --@aspect_rules_ts//ts:default_to_tsc_transpiler
 test --test_output=errors
+
+# The deployed site: records the commit it is built from.
+build:release --stamp --workspace_status_command=tools/workspace_status.sh

@@ -85,6 +85,21 @@ ML-DSA-44 needs a recent browser (Chrome 157 is known to work). Where WebCrypto
 lacks it, those signatures are reported as not checked and the quorum is
 evaluated on the remaining ones.
 
+## Checking the deployed site
+
+The page asks to be trusted as a verifier, so it says what it is: the footer
+names the commit it was built from, and the deploy workflow publishes a signed
+statement ([build provenance](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations))
+for every file it serves. To check that a file came from this repository's
+workflow, unmodified:
+
+    curl -sO https://benbirt.github.io/tlog-viewer/js/app.js
+    gh attestation verify app.js --repo benbirt/tlog-viewer
+
+This ties the files GitHub Pages serves to a commit and a workflow run. It does
+not stop whoever controls the hosting from serving something else to a
+particular visitor; only checking the files you were served does that.
+
 ## Automation
 
 Everything that can go stale is updated by pull requests that merge themselves

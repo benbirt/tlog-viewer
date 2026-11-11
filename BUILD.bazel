@@ -79,12 +79,28 @@ js_run_binary(
     tool = ":gen_policy",
 )
 
+js_binary(
+    name = "gen_build_info",
+    data = NODE_RUNTIME,
+    entry_point = "tools/gen_build_info.js",
+)
+
+# Says which commit the site was built from, in builds made with
+# --config=release; otherwise that it is a development build.
+js_run_binary(
+    name = "build_info",
+    stamp = -1,
+    stdout = "web/js/build_info.js",
+    tool = ":gen_build_info",
+)
+
 # The static site, ready to serve from any web server.
 copy_to_directory(
     name = "site",
     srcs = [
         "web/index.html",
         "web/style.css",
+        ":build_info",
         ":policy_data",
         ":web",
     ],
@@ -103,7 +119,10 @@ js_binary(
     js_test(
         name = t.removeprefix("tests/").removesuffix(".ts").replace(".", "_"),
         size = "small",
-        data = NODE_RUNTIME + glob(["tests/testdata/**"]) + [":policy_data"],
+        data = NODE_RUNTIME + glob(["tests/testdata/**"]) + [
+            ":build_info",
+            ":policy_data",
+        ],
         entry_point = t.removesuffix(".ts") + ".js",
     )
     for t in glob(["tests/*.test.ts"])

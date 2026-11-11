@@ -48,6 +48,9 @@ viewerTest("a healthy log verifies and is listed newest first", async (v) => {
   assert.match(await v.text("#checked"), /^Checked /);
   assert.equal(await v.page.locator("#debug-banner").isHidden(), true);
   assert.equal(await v.page.locator("#rows .badge.bad").count(), 0);
+  // The page says what it is. The tests run an unstamped build.
+  assert.match(await v.text("#build"), /development build/);
+  assert.match(await v.text("#policy-source"), /\/\/test:policy from google-tlog-witness@0000000/);
 });
 
 viewerTest("an empty log and an unpublished one are told apart", async (v, w) => {

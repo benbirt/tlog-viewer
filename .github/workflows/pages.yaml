@@ -16,6 +16,11 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # To sign a statement of which commit and workflow built the site.
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -27,10 +32,18 @@ jobs:
           repository-cache: true
       # Never publish a verifier that fails its own tests.
       - run: bazel test //...
-      - run: bazel build //:site
+      # --config=release records the commit in the page (see .bazelrc).
+      - run: bazel build --config=release //:site
+      - run: cp -rL bazel-bin/site _site
+      # Lets anyone check that a file the site serves was built by this
+      # workflow from this repository: see "Checking the deployed site" in
+      # the README.
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: _site/**
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
-          path: bazel-bin/site
+          path: _site
 
   deploy:
     needs: build
