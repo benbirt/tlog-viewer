@@ -1,0 +1,5 @@
+common --enable_platform_specific_config
+common --incompatible_strict_action_env
+common --@aspect_rules_ts//ts:skipLibCheck=always
+common --@aspect_rules_ts//ts:default_to_tsc_transpiler
+test --test_output=errors

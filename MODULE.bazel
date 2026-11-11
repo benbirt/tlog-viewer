@@ -1,0 +1,40 @@
+module(
+    name = "tlog_viewer",
+    version = "0.0.0",
+)
+
+bazel_dep(name = "aspect_rules_js", version = "3.6.0")
+bazel_dep(name = "aspect_rules_ts", version = "3.10.1")
+bazel_dep(name = "bazel_lib", version = "3.7.0")
+bazel_dep(name = "rules_nodejs", version = "6.7.7")
+
+# The tlog-policy (log keys, witness keys and quorum) baked into the viewer is
+# built from this repository. It is not in a registry, so it is pinned by
+# commit; .github/workflows/update-pins.yaml advances the pin.
+bazel_dep(name = "google-tlog-witness", version = "0.0.1", repo_name = "google_tlog_witness")
+git_override(
+    module_name = "google-tlog-witness",
+    commit = "668ba3c1f316dafd9657e2ab69af5afa930694ac",
+    remote = "https://github.com/google/google-tlog-witness.git",
+)
+
+# Tests run the verifier under Node's WebCrypto; ML-DSA needs Node >= 24.7.
+node = use_extension("@rules_nodejs//nodejs:extensions.bzl", "node", dev_dependency = True)
+node.toolchain(node_version = "24.11.0")
+
+# pnpm, run through Bazel to change dependencies:
+#   bazel run -- @pnpm//:pnpm --dir $PWD add --save-dev --save-exact --lockfile-only <package>
+pnpm = use_extension("@aspect_rules_js//npm:extensions.bzl", "pnpm", dev_dependency = True)
+pnpm.pnpm(pnpm_version_from = "//:package.json")
+use_repo(pnpm, "pnpm")
+
+npm = use_extension("@aspect_rules_js//npm:extensions.bzl", "npm", dev_dependency = True)
+npm.npm_translate_lock(
+    name = "npm",
+    pnpm_lock = "//:pnpm-lock.yaml",
+)
+use_repo(npm, "npm")
+
+typescript = use_extension("@aspect_rules_ts//ts:extensions.bzl", "typescript", dev_dependency = True)
+typescript.deps(version_from = "//:package.json")
+use_repo(typescript, "npm_typescript")

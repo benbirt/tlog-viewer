@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src https://www.gstatic.com; base-uri 'none'; form-action 'none'">
+<title>PAIC log viewer</title>
+<link rel="stylesheet" href="style.css">
+<script type="module" src="js/app.js"></script>
+</head>
+<body>
+<header class="top">
+  <div class="wrap top-row">
+    <h1>PAIC transparency log</h1>
+    <nav id="logs" class="tabs" aria-label="Logs"></nav>
+    <button id="refresh" type="button" class="btn">Refresh</button>
+  </div>
+</header>
+
+<main class="wrap">
+  <p class="lede">Project Oak endorsements published to the PAIC logs, verified in this browser:
+    nothing below is trusted until the checks beside it pass.</p>
+
+  <section aria-label="Verification" class="steps" id="steps">
+    <div class="step" id="step-log"><span class="mark"></span><div><h2>Log signature</h2><p>Waiting…</p></div></div>
+    <div class="step" id="step-quorum"><span class="mark"></span><div><h2>Witness quorum</h2><p>Waiting…</p></div></div>
+    <div class="step" id="step-root"><span class="mark"></span><div><h2>Merkle root</h2><p>Waiting…</p></div></div>
+    <div class="step" id="step-entries"><span class="mark"></span><div><h2>Entries</h2><p>Waiting…</p></div></div>
+  </section>
+
+  <details class="panel" id="checkpoint">
+    <summary>Checkpoint <span id="cp-summary" class="muted"></span></summary>
+    <div id="cp-body"></div>
+  </details>
+
+  <div id="notice" role="status"></div>
+
+  <section aria-label="Entries" id="entries" hidden>
+    <div class="toolbar">
+      <input id="q" type="search" placeholder="Search subject, digest, workload, version, claim, key…" aria-label="Search entries" autocomplete="off" spellcheck="false">
+      <select id="f-validity" aria-label="Validity">
+        <option value="">Any validity</option>
+        <option value="valid">Valid now</option>
+        <option value="expired">Expired</option>
+        <option value="future">Not yet valid</option>
+      </select>
+      <select id="f-publisher" aria-label="Publisher"><option value="">Any publisher</option></select>
+      <label class="check"><input id="f-problems" type="checkbox"> Failed checks only</label>
+      <span id="count" class="muted" aria-live="polite"></span>
+    </div>
+    <div class="table" role="table" aria-label="Log entries">
+      <div class="row head" role="row">
+        <span role="columnheader">#</span>
+        <span role="columnheader">Issued (UTC)</span>
+        <span role="columnheader">Subject</span>
+        <span role="columnheader" class="c-digest">SHA-256</span>
+        <span role="columnheader" class="c-workload">Workload</span>
+        <span role="columnheader" class="c-publisher">Publisher</span>
+        <span role="columnheader">Validity</span>
+        <span role="columnheader" class="c-ok">Checks</span>
+      </div>
+      <div id="rows" role="rowgroup"></div>
+    </div>
+  </section>
+</main>
+
+<dialog id="detail" aria-labelledby="detail-title">
+  <form method="dialog" class="detail-head">
+    <h2 id="detail-title">Entry</h2>
+    <button class="btn" aria-label="Close">Close</button>
+  </form>
+  <div id="detail-body"></div>
+</dialog>
+
+<footer class="wrap foot">
+  <p>Trust policy: <span id="policy-source"></span>. Log and witness keys are compiled into this page.</p>
+  <p>An entry's signature check shows that the endorsement was signed by the key published alongside it.
+    Whether that key is one you should trust is not something this page can tell you.</p>
+</footer>
+</body>
+</html>

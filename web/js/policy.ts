@@ -1,0 +1,158 @@
+// Parser and quorum evaluation for https://c2sp.org/tlog-policy files.
+
+import { b64Decode, type Bytes } from "./bytes.js";
+
+export const ALG_ED25519 = 0x01;
+export const ALG_ED25519_COSIG = 0x04;
+export const ALG_MLDSA44 = 0x06;
+
+export const ALG_NAMES: Record<number, string> = {
+  [ALG_ED25519]: "Ed25519",
+  [ALG_ED25519_COSIG]: "Ed25519 cosignature",
+  [ALG_MLDSA44]: "ML-DSA-44",
+};
+
+export interface VKey {
+  text: string;
+  name: string;
+  keyId: number;
+  /** The signature type byte that prefixes the key. */
+  alg: number;
+  key: Bytes;
+}
+
+export interface Log {
+  vkey: VKey;
+  url: string | null;
+}
+
+export interface Witness {
+  /** The witness's name within the policy, which is not its key name. */
+  name: string;
+  vkey: VKey;
+  url: string | null;
+}
+
+export interface Group {
+  name: string;
+  threshold: number;
+  members: string[];
+}
+
+export interface Policy {
+  logs: Log[];
+  witnesses: Witness[];
+  groups: Group[];
+  /** The witness or group that must have cosigned, or "none". */
+  quorum: string;
+}
+
+/** A quorum rule evaluated against a set of cosigners. */
+export type QuorumNode =
+  | { kind: "none"; name: "none"; satisfied: true }
+  | { kind: "witness"; name: string; satisfied: boolean }
+  | { kind: "group"; name: string; satisfied: boolean; threshold: number; count: number; children: QuorumNode[] };
+
+/** Parses "<name>+<8 hex key id>+<base64(type byte || key)>". */
+export function parseVKey(text: string): VKey {
+  const first = text.indexOf("+");
+  const second = text.indexOf("+", first + 1);
+  if (first <= 0 || second < 0) throw new Error(`malformed vkey: ${text.slice(0, 60)}`);
+  const name = text.slice(0, first);
+  const idHex = text.slice(first + 1, second);
+  if (!/^[0-9a-f]{8}$/.test(idHex)) throw new Error(`malformed key id in vkey for ${name}`);
+  const raw = b64Decode(text.slice(second + 1));
+  if (raw.length < 2) throw new Error(`empty key in vkey for ${name}`);
+  return { text, name, keyId: parseInt(idHex, 16), alg: raw[0]!, key: raw.subarray(1) };
+}
+
+export function parsePolicy(text: string): Policy {
+  const logs: Log[] = [];
+  const witnesses: Witness[] = [];
+  const groups: Group[] = [];
+  let quorum: string | null = null;
+  const names = new Set<string>();
+
+  text.split("\n").forEach((line, i) => {
+    if (line.trim() === "" || line.startsWith("#")) return;
+    const fail = (msg: string): never => {
+      throw new Error(`line ${i + 1}: ${msg}`);
+    };
+    const define = (name: string) => {
+      if (name === "none") fail('"none" is reserved');
+      if (names.has(name)) fail(`duplicate name ${name}`);
+      names.add(name);
+    };
+    const [keyword, ...args] = line.trim().split(/[ \t]+/);
+    switch (keyword) {
+      case "log": {
+        const [vkey, url] = args;
+        if (vkey === undefined || args.length > 2) return fail("malformed log line");
+        logs.push({ vkey: parseVKey(vkey), url: url ?? null });
+        break;
+      }
+      case "witness": {
+        const [name, vkeyText, url] = args;
+        if (name === undefined || vkeyText === undefined || args.length > 3) return fail("malformed witness line");
+        define(name);
+        const vkey = parseVKey(vkeyText);
+        if (vkey.alg !== ALG_ED25519_COSIG && vkey.alg !== ALG_MLDSA44) {
+          fail(`witness ${name} does not use a cosignature key type`);
+        }
+        witnesses.push({ name, vkey, url: url ?? null });
+        break;
+      }
+      case "group": {
+        const [name, thresholdText, ...members] = args;
+        if (name === undefined || thresholdText === undefined || members.length === 0) return fail("malformed group line");
+        if (new Set(members).size !== members.length) fail(`group ${name} repeats a member`);
+        for (const m of members) {
+          if (!names.has(m)) fail(`group ${name} references undefined ${m}`);
+        }
+        let threshold: number;
+        if (thresholdText === "any") threshold = 1;
+        else if (thresholdText === "all") threshold = members.length;
+        else if (/^[1-9][0-9]*$/.test(thresholdText)) threshold = Number(thresholdText);
+        else return fail(`bad threshold ${thresholdText}`);
+        if (threshold > members.length) fail("threshold exceeds group size");
+        define(name);
+        groups.push({ name, threshold, members });
+        break;
+      }
+      case "quorum": {
+        const [name] = args;
+        if (name === undefined || args.length !== 1) return fail("malformed quorum line");
+        if (quorum !== null) fail("more than one quorum line");
+        if (name !== "none" && !names.has(name)) fail(`quorum references undefined ${name}`);
+        quorum = name;
+        break;
+      }
+      default:
+        fail(`unknown keyword ${keyword}`);
+    }
+  });
+  if (quorum === null) throw new Error("policy has no quorum line");
+  return { logs, witnesses, groups, quorum };
+}
+
+/** The distinct log origins a policy trusts, in order of first appearance. */
+export function logOrigins(policy: Policy): string[] {
+  return [...new Set(policy.logs.map((l) => l.vkey.name))];
+}
+
+/**
+ * Evaluates the quorum rule given the policy-local names of the witnesses
+ * whose cosignatures verified.
+ */
+export function evaluateQuorum(policy: Policy, validWitnesses: ReadonlySet<string>): QuorumNode {
+  if (policy.quorum === "none") return { kind: "none", name: "none", satisfied: true };
+  const groups = new Map(policy.groups.map((g) => [g.name, g]));
+  const evalName = (name: string): QuorumNode => {
+    const g = groups.get(name);
+    if (!g) return { kind: "witness", name, satisfied: validWitnesses.has(name) };
+    const children = g.members.map(evalName);
+    const count = children.filter((c) => c.satisfied).length;
+    return { kind: "group", name, threshold: g.threshold, count, satisfied: count >= g.threshold, children };
+  };
+  return evalName(policy.quorum);
+}

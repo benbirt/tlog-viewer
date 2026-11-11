@@ -1,0 +1,2 @@
+# No dependency is allowed to run install scripts.
+allowBuilds: {}

@@ -1,0 +1,99 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import test from "node:test";
+import { type Bytes, hex } from "../web/js/bytes.js";
+import { decodeEntry, derSignatureToRaw } from "../web/js/entry.js";
+import { leafHash, rootFromLeafHashes } from "../web/js/merkle.js";
+import { encodeIndex, HttpError, LogClient, parseBundle, tilePath, tilesForSize } from "../web/js/tiles.js";
+
+const read = (f: string): Bytes => new Uint8Array(readFileSync(new URL("testdata/" + f, import.meta.url)));
+const bytes = (s: string): Bytes => new Uint8Array(Buffer.from(s));
+const bundle = read("entries-first7.bin");
+const tile0 = read("tile-0-000.bin");
+
+// Tree heads of the first n leaves of paic.google.com/log/0, computed with
+// golang.org/x/mod/sumdb/tlog.
+const ROOTS = [
+  "a42a259c56497e0a2ad88f13623e472ce4e1a53ec899228b20cee1781bb4f245",
+  "455085e46707c789a0c7cf7b66f47f8fe8fb21a137cd87fe9dbb56e4e7ffdcc3",
+  "6d90a74990d105847ac93bd385d7d88635337d31765ca6ae9f7e0f5836823d3b",
+  "08505184983a190fa73bf7505a88d34d509d1278104e2fe5032cc9de3735db97",
+  "46d41510beb90a6208596c4ccb72d81cb1c4e200f8ddcbf2ca98c6bae5638f28",
+  "a1fccabd120189dba49ae0bc24dadc6ff2bc1d2f02c5c08f39a4d5c7bf607bce",
+  "4885b292c815ead602c7a85d905f2910394b2bd3e8695bc0ea79e8dd60a4fc79",
+];
+
+test("tile paths", () => {
+  assert.equal(encodeIndex(0), "000");
+  assert.equal(encodeIndex(1234067), "x001/x234/067");
+  assert.equal(tilePath(0, 21, 146), "tile/0/021.p/146");
+  assert.equal(tilePath("entries", 1000), "tile/entries/x001/000");
+  assert.deepEqual(tilesForSize(0), []);
+  assert.deepEqual(tilesForSize(256), [{ index: 0, width: 256 }]);
+  assert.deepEqual(tilesForSize(258), [{ index: 0, width: 256 }, { index: 1, width: 2 }]);
+});
+
+test("entry leaf hashes match the log's level-0 tile", async () => {
+  const entries = parseBundle(bundle);
+  assert.equal(entries.length, 7);
+  for (let i = 0; i < entries.length; i++) {
+    assert.equal(hex(await leafHash(entries[i]!)), hex(tile0.subarray(i * 32, i * 32 + 32)));
+  }
+});
+
+test("Merkle tree heads", async () => {
+  assert.equal(hex(await rootFromLeafHashes(new Uint8Array(0))), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+  for (let n = 1; n <= ROOTS.length; n++) {
+    assert.equal(hex(await rootFromLeafHashes(tile0, n)), ROOTS[n - 1], `size ${n}`);
+  }
+  // The first hash of the level-1 tile is the head of the first 256 leaves.
+  assert.equal(hex(await rootFromLeafHashes(tile0)), hex(read("tile-1-000-first-hash.bin")));
+});
+
+test("truncated bundles are rejected", () => {
+  assert.throws(() => parseBundle(bundle.subarray(0, bundle.length - 1)), /truncated/);
+  assert.throws(() => parseBundle(Uint8Array.of(0)), /truncated/);
+});
+
+test("LogClient checks tile sizes and reports HTTP errors", async () => {
+  const served: Record<string, Bytes> = { "https://log.example/tile/entries/000.p/7": bundle, "https://log.example/tile/0/000": tile0 };
+  const client = new LogClient("https://log.example/", async (url) =>
+    served[url] ? new Response(served[url]) : new Response("no", { status: 404 }));
+  assert.equal((await client.entryBundle({ index: 0, width: 7 })).length, 7);
+  assert.equal((await client.hashTile({ index: 0, width: 256 })).length, 8192);
+  await assert.rejects(client.hashTile({ index: 1, width: 3 }), (e) => e instanceof HttpError && e.status === 404);
+});
+
+test("decodes and verifies real endorsement entries", async () => {
+  for (const bytes of parseBundle(bundle)) {
+    const e = await decodeEntry(bytes);
+    assert.equal(e.error, null);
+    assert.deepEqual(e.checks, { contentHash: true, signature: true });
+    assert.equal(e.summary?.predicateType, "https://project-oak.github.io/oak/tr/endorsement/v1");
+    assert.match(e.keyFingerprint ?? "", /^[0-9a-f]{64}$/);
+  }
+  const first = await decodeEntry(parseBundle(bundle)[0]!);
+  assert.equal(first.summary?.subjectName, "mpm_d62bab1c86");
+  assert.equal(first.summary?.subjectDigest, "872e54fcfa1100224729b4f4d02169ae48782325e1ccfc9c06bf6728bc5206b1");
+  assert.equal(first.summary?.notAfter, "2027-01-28T22:39:29.108000Z");
+  assert.equal(first.summary?.claims.length, 2);
+});
+
+test("tampered entries fail their checks", async () => {
+  const record = JSON.parse(Buffer.from(parseBundle(bundle)[0]!).toString());
+  const statement = Buffer.from(record.spec.data.content, "base64").toString().replace("mpm_d62bab1c86", "mpm_0000000000");
+  record.spec.data.content = Buffer.from(statement).toString("base64");
+  const e = await decodeEntry(bytes(JSON.stringify(record)));
+  assert.deepEqual(e.checks, { contentHash: false, signature: false });
+  assert.equal(e.summary?.subjectName, "mpm_0000000000");
+
+  const junk = await decodeEntry(bytes("not json"));
+  assert.ok(junk.error);
+  assert.deepEqual(junk.checks, { contentHash: null, signature: null });
+});
+
+test("DER signature conversion", () => {
+  const der = Uint8Array.from([0x30, 0x08, 0x02, 0x02, 0x00, 0x81, 0x02, 0x02, 0x01, 0x02]);
+  assert.equal(hex(derSignatureToRaw(der, 2)), "00810102");
+  assert.throws(() => derSignatureToRaw(der.subarray(0, 9), 2));
+});

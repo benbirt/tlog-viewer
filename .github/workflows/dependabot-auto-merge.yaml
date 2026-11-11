@@ -1,0 +1,23 @@
+name: Dependabot auto-merge
+
+# Sets Dependabot's pull requests to merge once the required checks pass.
+# Nothing from the pull request is checked out or run here.
+#
+# Auto-merge is enabled with a personal token so that the merge raises a push
+# event and is deployed; a merge on behalf of GITHUB_TOKEN would not. Workflows
+# that Dependabot triggers read Dependabot's secrets, not the Actions ones, so
+# AUTOMATION_TOKEN has to be set there too.
+
+on: pull_request
+
+permissions: {}
+
+jobs:
+  auto-merge:
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - run: gh pr merge "$PR_URL" --auto --squash
+        env:
+          GH_TOKEN: ${{ secrets.AUTOMATION_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}

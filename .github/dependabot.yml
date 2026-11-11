@@ -1,0 +1,37 @@
+# Weekly version updates, one pull request per ecosystem.
+# dependabot-auto-merge.yaml merges them once CI passes.
+#
+# Not covered here: the google-tlog-witness commit and .bazelversion, which
+# update-pins.yaml advances, and the Node version in MODULE.bazel, which
+# nothing does (it has to be one that the pinned rules_nodejs knows).
+version: 2
+updates:
+  # bazel_dep versions in MODULE.bazel; Dependabot runs `bazel mod tidy` to
+  # update MODULE.bazel.lock.
+  - package-ecosystem: bazel
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      # Pinned by commit with git_override, not from a registry.
+      - dependency-name: google-tlog-witness
+    groups:
+      bazel:
+        patterns: ["*"]
+
+  # package.json and pnpm-lock.yaml: TypeScript and Node's types.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      npm:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]

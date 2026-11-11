@@ -1,0 +1,110 @@
+name: Update pins
+
+# Advances the versions that Dependabot cannot: the google-tlog-witness commit
+# that the trust policy is built from, and the Bazel version. Each gets its
+# own pull request, set to merge automatically once CI passes.
+#
+# The first is what brings new log instances, witnesses and key rotations to
+# the published viewer without anyone having to remember.
+#
+# The branch is pushed and the pull request opened with a personal token
+# (the AUTOMATION_TOKEN secret) rather than GITHUB_TOKEN, whose pushes and
+# merges trigger no workflows: CI would not run on the pull request, and the
+# merge would not be deployed.
+
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pin: [policy, bazel]
+    concurrency:
+      group: update-pins-${{ matrix.pin }}
+    env:
+      BRANCH: update/${{ matrix.pin }}
+      GH_TOKEN: ${{ secrets.AUTOMATION_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          token: ${{ secrets.AUTOMATION_TOKEN }}
+
+      - name: Update the google-tlog-witness commit
+        if: matrix.pin == 'policy'
+        run: |
+          upstream=https://github.com/google/google-tlog-witness
+          new=$(git ls-remote "$upstream.git" refs/heads/main | cut -f1)
+          [[ "$new" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::could not resolve upstream main"; exit 1; }
+          old=$(sed -n -E '/module_name = "google-tlog-witness"/,/^\)/ s/.*commit = "([0-9a-f]{40})".*/\1/p' MODULE.bazel)
+          [[ "$old" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no google-tlog-witness pin in MODULE.bazel"; exit 1; }
+          sed -i -E '/module_name = "google-tlog-witness"/,/^\)/ s/commit = "[0-9a-f]{40}"/commit = "'"$new"'"/' MODULE.bazel
+          {
+            echo "TITLE=Update the trust policy to google-tlog-witness@${new:0:7}"
+            echo "BODY=Changes upstream: $upstream/compare/$old...$new"
+          } >> "$GITHUB_ENV"
+
+      - name: Update the Bazel version
+        if: matrix.pin == 'bazel'
+        run: |
+          new=$(gh api repos/bazelbuild/bazel/releases/latest --jq .tag_name)
+          [[ "$new" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::unexpected Bazel release '$new'"; exit 1; }
+          echo "$new" > .bazelversion
+          {
+            echo "TITLE=Update Bazel to $new"
+            echo "BODY=https://github.com/bazelbuild/bazel/releases/tag/$new"
+          } >> "$GITHUB_ENV"
+
+      - name: Check for changes
+        id: diff
+        run: |
+          if git diff --quiet; then
+            echo "Already up to date."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: bazel-contrib/setup-bazel@f34d6a05eae3c24acab7fa54587492daeaeffdab # 0.19.2
+        if: steps.diff.outputs.changed == 'true'
+        with:
+          bazelisk-cache: true
+          repository-cache: true
+
+      - name: Refresh the lockfile
+        if: steps.diff.outputs.changed == 'true'
+        run: bazel mod deps --lockfile_mode=update
+
+      - name: Open or update the pull request
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          files=(MODULE.bazel MODULE.bazel.lock .bazelversion)
+          # Leave an existing branch alone if it already holds this update on
+          # top of the current main, so that a pull request waiting on CI is
+          # not restarted every day.
+          if git fetch --quiet --depth=2 origin "$BRANCH" 2>/dev/null &&
+             [ "$(git rev-parse FETCH_HEAD^)" = "$(git rev-parse HEAD)" ] &&
+             git diff --quiet FETCH_HEAD -- "${files[@]}"; then
+            echo "$BRANCH already has this update."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -C "$BRANCH"
+          git commit -m "$TITLE" -m "$BODY" -- "${files[@]}"
+          git push --force origin "$BRANCH"
+          body="$BODY"$'\n\n'"Opened by the [Update pins]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) workflow."
+          if [ -z "$(gh pr list --head "$BRANCH" --state open --json number --jq '.[].number')" ]; then
+            gh pr create --head "$BRANCH" --base main --title "$TITLE" --body "$body"
+          else
+            gh pr edit "$BRANCH" --title "$TITLE" --body "$body"
+          fi
+          gh pr merge "$BRANCH" --auto --squash

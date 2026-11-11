@@ -1,0 +1,108 @@
+load("@aspect_rules_js//js:defs.bzl", "js_binary", "js_run_binary", "js_test")
+load("@aspect_rules_ts//ts:defs.bzl", "ts_config", "ts_project")
+load("@bazel_lib//lib:copy_file.bzl", "copy_file")
+load("@bazel_lib//lib:copy_to_directory.bzl", "copy_to_directory")
+load("@npm//:defs.bzl", "npm_link_all_packages")
+
+npm_link_all_packages(name = "node_modules")
+
+# Browser code.
+ts_config(
+    name = "tsconfig",
+    src = "tsconfig.json",
+)
+
+# Node code: tests and tools.
+ts_config(
+    name = "tsconfig_node",
+    src = "tsconfig.node.json",
+    deps = [":tsconfig"],
+)
+
+# The viewer. web/js/policy_data.d.ts stands in for the generated policy
+# module below, so that compiling does not depend on generating it.
+ts_project(
+    name = "web",
+    srcs = glob(["web/js/*.ts"]),
+    declaration = True,
+    tsconfig = ":tsconfig",
+)
+
+ts_project(
+    name = "node",
+    srcs = glob([
+        "tests/*.ts",
+        "tools/*.ts",
+    ]),
+    declaration = True,
+    tsconfig = ":tsconfig_node",
+    deps = [
+        ":node_modules/@types/node",
+        ":web",
+    ],
+)
+
+NODE_RUNTIME = [
+    "package.json",
+    ":node",
+    ":web",
+]
+
+# The verifier policy for the production PAIC logs, from google-tlog-witness.
+copy_file(
+    name = "policy_file",
+    src = "@google_tlog_witness//policies/paic:prod-verifier.policy",
+    out = "prod-verifier.policy",
+)
+
+js_binary(
+    name = "gen_policy",
+    data = NODE_RUNTIME,
+    entry_point = "tools/gen_policy.js",
+)
+
+# Bakes the policy into a JS module, failing the build if the viewer's own
+# parser rejects it.
+js_run_binary(
+    name = "policy_data",
+    srcs = [
+        "MODULE.bazel",
+        ":prod-verifier.policy",
+    ],
+    args = [
+        "prod-verifier.policy",
+        "MODULE.bazel",
+    ],
+    stdout = "web/js/policy_data.js",
+    tool = ":gen_policy",
+)
+
+# The static site, ready to serve from any web server.
+copy_to_directory(
+    name = "site",
+    srcs = [
+        "web/index.html",
+        "web/style.css",
+        ":policy_data",
+        ":web",
+    ],
+    exclude_srcs_patterns = ["**/*.d.ts"],
+    root_paths = ["web"],
+)
+
+# bazel run //:serve [-- port]
+js_binary(
+    name = "serve",
+    data = NODE_RUNTIME + [":site"],
+    entry_point = "tools/serve.js",
+)
+
+[
+    js_test(
+        name = t.removeprefix("tests/").removesuffix(".ts").replace(".", "_"),
+        size = "small",
+        data = NODE_RUNTIME + glob(["tests/testdata/**"]) + [":policy_data"],
+        entry_point = t.removesuffix(".ts") + ".js",
+    )
+    for t in glob(["tests/*.test.ts"])
+]
