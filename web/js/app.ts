@@ -3,15 +3,17 @@
 
 import { b64Encode, type Bytes, bytesEqual, hex } from "./bytes.js";
 import { logBaseUrl } from "./config.js";
-import { type DecodedEntry, decodeEntry, type Summary } from "./entry.js";
-import { type Fault, faultById, FAULTS, faultTargets, faultyFetch } from "./faults.js";
+import { statementTextOf, type Summary } from "./entry.js";
+import { type Fault, faultById, FAULTS, faultyFetch } from "./faults.js";
 import { extendLeafHashes } from "./grow.js";
+import type { CheckedEntry } from "./ingest.js";
 import { verifyInteriorTiles } from "./interior.js";
-import { leafHash, rootFromLeafHashes } from "./merkle.js";
+import { rootFromLeafHashes } from "./merkle.js";
 import { type CheckpointResult, type SignatureResult, verifyCheckpoint } from "./note.js";
 import { logOrigins, parsePolicy, type QuorumNode } from "./policy.js";
 import { BUILD } from "./build_info.js";
 import { POLICY_SOURCE, POLICY_TEXT } from "./policy_data.js";
+import { WorkerPool } from "./pool.js";
 import { HttpError, LogClient, TILE_WIDTH, tilePath, type TileRef, tilesForSize } from "./tiles.js";
 
 const DEFAULT_PAGE_SIZE = 50;
@@ -20,17 +22,7 @@ const STALE_AFTER_SECONDS = 24 * 60 * 60;
 const policy = parsePolicy(POLICY_TEXT);
 const origins = logOrigins(policy);
 
-/** A decoded entry plus what the viewer established about its place in the log. */
-interface Entry extends DecodedEntry {
-  index: number;
-  leafHash: Bytes;
-  /** Whether the entry hashes to the leaf the log committed to. */
-  inLog: boolean;
-  /** Whether every check passed. */
-  ok: boolean;
-  /** Lower-cased text the search box matches against. */
-  haystack: string;
-}
+type Entry = CheckedEntry;
 
 /** Everything known about the log on screen; replaced wholesale on switching logs. */
 interface LogState {
@@ -39,6 +31,8 @@ interface LogState {
   fault: string | null;
   /** Cancels the requests of a load that has been superseded. */
   abort: AbortController;
+  /** Does the hashing and checking, off the main thread. */
+  workers: WorkerPool;
   client: LogClient;
   size: number;
   /** Set once the leaf hashes have been shown to hash to the checkpoint. */
@@ -275,6 +269,7 @@ let closingForReload = false;
 async function load(origin: string, attempt = 0): Promise<void> {
   // Stop whatever the previous load still has in flight.
   state?.abort.abort();
+  state?.workers.terminate();
   const abort = new AbortController();
   const fault = faultById(ui.fault);
   const base = logBaseUrl(origin);
@@ -282,6 +277,7 @@ async function load(origin: string, attempt = 0): Promise<void> {
     origin,
     fault: fault?.id ?? null,
     abort,
+    workers: new WorkerPool(),
     client: new LogClient(base, fault ? faultyFetch(fault, base) : undefined, abort.signal),
     size: 0,
     leafHashes: null,
@@ -353,7 +349,7 @@ async function load(origin: string, attempt = 0): Promise<void> {
       if (live()) leafHashes.set(await s.client.hashTile(t), t.index * TILE_WIDTH * 32);
     });
     if (!live()) return;
-    const root = await rootFromLeafHashes(leafHashes, cp.size);
+    const { root, interior: expected } = await s.workers.tree(leafHashes, cp.size);
     if (!live()) return;
     if (!bytesEqual(root, cp.hash)) {
       setStep("step-root", "fail", `Recomputed ${b64Encode(root)}, checkpoint says ${b64Encode(cp.hash)}.`);
@@ -364,7 +360,7 @@ async function load(origin: string, attempt = 0): Promise<void> {
     setStep("step-root", "busy", `${rootText(cp.size)} Checking interior tiles…`);
     // The viewer never relies on the log's tiles above level 0, but a log that
     // serves ones inconsistent with its leaves is broken, so check them too.
-    const interior = await verifyInteriorTiles(s.client, leafHashes, cp.size);
+    const interior = await verifyInteriorTiles(s.client, leafHashes, cp.size, expected);
     if (!live()) return;
     showRootStep(cp.size, interior);
     s.leafHashes = leafHashes;
@@ -496,31 +492,17 @@ function showRootStep(size: number, interior: { checked: number; mismatched: str
  */
 async function ingestBundle(s: LogState, t: TileRef, from: number): Promise<void> {
   const live = () => state === s;
-  const leafHashes = s.leafHashes;
-  if (!live() || !leafHashes) return;
-  const fault = faultById(s.fault);
-  const bundle = await s.client.entryBundle(t);
-  const altered = fault?.entry ? faultTargets(s.size) : [];
-  for (const [i, served] of bundle.entries()) {
-    const index = t.index * TILE_WIDTH + i;
-    if (index < from) continue;
-    // A simulated failure alters an entry either as served, before it is
-    // compared with its leaf hash, or as if logged that way, after.
-    const rewrite = fault?.entry && altered.includes(index) ? fault.entry : null;
-    const bytes = rewrite && fault?.entryStage === "served" ? rewrite(served) : served;
-    const lh = await leafHash(bytes);
-    const decoded = await decodeEntry(rewrite && fault?.entryStage === "logged" ? rewrite(bytes) : bytes);
-    if (!live()) return;
-    const inLog = bytesEqual(lh, leafHashes.subarray(index * 32, index * 32 + 32));
-    const e: Entry = {
-      ...decoded,
-      index,
-      leafHash: lh,
-      inLog,
-      ok: inLog && !decoded.error && decoded.checks.contentHash === true && decoded.checks.signature === true,
-      haystack: haystack(index, decoded),
-    };
-    if (!inLog) s.failures.leaf++;
+  if (!live() || !s.leafHashes) return;
+  const start = t.index * TILE_WIDTH;
+  // The fetching, hashing and signature checking happen in a worker.
+  const entries = await s.workers.bundle({
+    base: s.client.base, fault: s.fault, tile: t, from, size: s.size,
+    tileLeafHashes: s.leafHashes.slice(start * 32, (start + t.width) * 32),
+  });
+  // Once loading has failed, bundles still in flight must not revive it.
+  if (!live() || s.failed) return;
+  for (const e of entries) {
+    if (!e.inLog) s.failures.leaf++;
     if (e.error) s.failures.parse++;
     else {
       if (e.checks.contentHash !== true) s.failures.contentHash++;
@@ -535,10 +517,10 @@ async function ingestBundle(s: LogState, t: TileRef, from: number): Promise<void
       // The route may name a publisher whose entries had not loaded yet.
       select.value = ui.publisher;
     }
-    s.entries[index] = e;
+    s.entries[e.index] = e;
     s.loaded++;
     // An entry opened by link shows as soon as it arrives, not at the end.
-    if (index === ui.entry) openDetailFromRoute();
+    if (e.index === ui.entry) openDetailFromRoute();
   }
   updateEntriesStep(s);
   scheduleFilter();
@@ -628,12 +610,12 @@ async function refresh(): Promise<void> {
     if (growth.kind === "rewritten") {
       return reportInconsistency(s, `The log now serves a different hash for entry ${count(growth.index)}, which it had already published.`);
     }
-    const root = await rootFromLeafHashes(growth.leafHashes, cp.size);
+    const { root, interior: expected } = await s.workers.tree(growth.leafHashes, cp.size);
     if (!live()) return;
     if (!bytesEqual(root, cp.hash)) {
       return reportInconsistency(s, `The log's new tree of ${count(cp.size)} entries does not extend the ${count(old.size)} verified before: with those kept, the root is ${b64Encode(root)}, but the new checkpoint says ${b64Encode(cp.hash)}.`);
     }
-    const interior = await verifyInteriorTiles(s.client, growth.leafHashes, cp.size);
+    const interior = await verifyInteriorTiles(s.client, growth.leafHashes, cp.size, expected);
     if (!live()) return;
 
     // Verified: take up the new tree, then fetch the entries added to it.
@@ -742,13 +724,6 @@ function renderCheckpoint(s: LogState, result: CheckpointResult): void {
 
 // ---------------------------------------------------------------------------
 // Entry list
-
-function haystack(index: number, e: DecodedEntry): string {
-  const s = e.summary;
-  if (!s) return String(index);
-  return [index, s.subjectName, s.subjectDigest, s.workload, s.version, s.publisher, s.artifact,
-    e.keyFingerprint, ...s.claims.map((c) => c.type)].filter((x) => x != null).join("\n").toLowerCase();
-}
 
 /**
  * Where now falls relative to the validity period an endorsement claims. This
@@ -959,8 +934,9 @@ function detailSections(s: LogState, e: Entry): HTMLElement[] {
       ["Entry bundle", link(bundleUrl)],
     ])),
   );
-  if (e.statementText) {
-    sections.push(h("section", null, h("h3", null, "Statement"), h("pre", null, e.statementText)));
+  const statementText = e.recordText === null ? null : statementTextOf(e.recordText);
+  if (statementText) {
+    sections.push(h("section", null, h("h3", null, "Statement"), h("pre", null, statementText)));
   }
   if (e.recordText) {
     // Everything needed to re-check the entry by hand: its leaf hash is

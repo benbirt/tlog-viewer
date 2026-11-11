@@ -17,9 +17,12 @@ export interface InteriorTileResult {
  * need these tiles, but a log that serves ones inconsistent with its leaves is
  * broken. A tile that cannot be fetched is an error, not a mismatch.
  */
-export async function verifyInteriorTiles(client: LogClient, leafHashes: Bytes, size: number): Promise<InteriorTileResult> {
+export async function verifyInteriorTiles(
+  client: LogClient, leafHashes: Bytes, size: number, expected?: Bytes[],
+): Promise<InteriorTileResult> {
   const result: InteriorTileResult = { checked: 0, mismatched: [] };
-  const levels = await interiorTileHashes(leafHashes, size);
+  // `expected` is interiorTileHashes(leafHashes, size), if already computed.
+  const levels = expected ?? await interiorTileHashes(leafHashes, size);
   for (const [i, expected] of levels.entries()) {
     const level = i + 1;
     await Promise.all(tilesForSize(expected.length / 32).map(async (t) => {

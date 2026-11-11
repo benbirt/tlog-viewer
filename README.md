@@ -53,6 +53,9 @@ change them with pnpm through Bazel (see `MODULE.bazel`).
 
 - `web/js/policy.ts`, `note.ts`, `merkle.ts`, `tiles.ts`, `interior.ts`,
   `grow.ts`, `entry.ts` — the verifier, with no DOM dependencies.
+- `web/js/ingest.ts`, `worker.ts`, `pool.ts` — entries are fetched, hashed and
+  checked in a small pool of web workers, so the page stays responsive as the
+  log grows.
 - `web/js/app.ts` — the UI.
 - `tests/e2e/` — the built site driven in a real browser (Playwright, with the
   Chrome already on the machine; set `CHROME_BIN` if it is not found). The logs
