@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { type Bytes, hex } from "../web/js/bytes.js";
-import { decodeEntry, derSignatureToRaw } from "../web/js/entry.js";
+import { decodeEntry, derSignatureToRaw, statementTextOf } from "../web/js/entry.js";
+import { checkBundle, hashTree } from "../web/js/ingest.js";
 import { verifyInteriorTiles } from "../web/js/interior.js";
 import { interiorTileHashes, leafHash, rootFromLeafHashes } from "../web/js/merkle.js";
 import { encodeIndex, HttpError, LogClient, parseBundle, tilePath, tilesForSize } from "../web/js/tiles.js";
@@ -204,4 +205,28 @@ test("a log client's requests can be cancelled", async () => {
   }, abort.signal);
   await client.checkpoint();
   assert.equal(seen, abort.signal);
+});
+
+test("checkBundle checks a bundle's entries against their leaf hashes", async () => {
+  const client = new LogClient("https://log.example/", async (url) =>
+    url === "https://log.example/tile/entries/000.p/7" ? new Response(bundle) : new Response("no", { status: 404 }));
+  const leaves = tile0.subarray(0, 7 * 32);
+  const all = await checkBundle(client, { index: 0, width: 7 }, 0, 7, leaves, null);
+  assert.deepEqual(all.map((e) => e.index), [0, 1, 2, 3, 4, 5, 6]);
+  assert.ok(all.every((e) => e.ok && e.inLog));
+  assert.match(all[0]!.haystack, /mpm_d62bab1c86/);
+  // What is kept per entry leaves out the parsed statement.
+  assert.ok(!("statement" in all[0]!) && !("statementText" in all[0]!));
+  assert.match(statementTextOf(all[0]!.recordText!) ?? "", /"name": "mpm_d62bab1c86"/);
+
+  // Entries before `from` are already held and are skipped.
+  assert.deepEqual((await checkBundle(client, { index: 0, width: 7 }, 5, 7, leaves, null)).map((e) => e.index), [5, 6]);
+
+  // Against the wrong leaf hashes, nothing is in the log.
+  const wrong = await checkBundle(client, { index: 0, width: 7 }, 0, 7, tile0.subarray(32, 8 * 32), null);
+  assert.ok(wrong.every((e) => !e.inLog && !e.ok && e.checks.signature === true));
+
+  const { root, interior } = await hashTree(tile0, 256);
+  assert.equal(hex(root), hex(read("tile-1-000-first-hash.bin")));
+  assert.equal(interior.length, 1);
 });

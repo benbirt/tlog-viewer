@@ -234,3 +234,13 @@ export async function decodeEntry(bytes: Bytes): Promise<DecodedEntry> {
   }
   return out;
 }
+
+/** The statement carried by an entry, as text, given the entry as recorded; null if there is none to read. */
+export function statementTextOf(recordText: string): string | null {
+  try {
+    const content = str(obj(obj(obj(JSON.parse(recordText)).spec).data).content);
+    return content === null ? null : utf8Decode(b64Decode(content));
+  } catch {
+    return null;
+  }
+}
