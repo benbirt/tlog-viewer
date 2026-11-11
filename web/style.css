@@ -34,7 +34,9 @@
 }
 
 * { box-sizing: border-box; }
-html { -webkit-text-size-adjust: 100%; }
+/* The scrollbar keeps its place when an open drawer stops the page scrolling,
+   so the page does not shift sideways. */
+html { -webkit-text-size-adjust: 100%; scrollbar-gutter: stable; }
 body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 var(--sans); }
 .wrap { max-width: 1240px; margin: 0 auto; padding: 0 16px; }
 h1, h2, h3, p { margin: 0; }

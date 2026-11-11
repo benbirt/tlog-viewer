@@ -33,7 +33,13 @@ function chromePath(): string {
 }
 
 export const launch = (): Promise<Browser> =>
-  chromium.launch({ executablePath: chromePath(), args: ["--no-sandbox", "--disable-gpu"] });
+  chromium.launch({
+    executablePath: chromePath(),
+    args: ["--no-sandbox", "--disable-gpu"],
+    // Playwright hides scrollbars by default. A desktop browser shows them,
+    // and they take up room, which is where layout bugs hide.
+    ignoreDefaultArgs: ["--hide-scrollbars"],
+  });
 
 export interface StepState {
   state: string;
