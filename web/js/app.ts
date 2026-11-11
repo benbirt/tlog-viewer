@@ -5,12 +5,13 @@ import { b64Encode, type Bytes, bytesEqual, hex } from "./bytes.js";
 import { logBaseUrl } from "./config.js";
 import { type DecodedEntry, decodeEntry, type Summary } from "./entry.js";
 import { type Fault, faultById, FAULTS, faultTargets, faultyFetch } from "./faults.js";
+import { extendLeafHashes } from "./grow.js";
 import { verifyInteriorTiles } from "./interior.js";
 import { leafHash, rootFromLeafHashes } from "./merkle.js";
 import { type CheckpointResult, type SignatureResult, verifyCheckpoint } from "./note.js";
 import { logOrigins, parsePolicy, type QuorumNode } from "./policy.js";
 import { POLICY_SOURCE, POLICY_TEXT } from "./policy_data.js";
-import { HttpError, LogClient, TILE_WIDTH, tilePath, tilesForSize } from "./tiles.js";
+import { HttpError, LogClient, TILE_WIDTH, tilePath, type TileRef, tilesForSize } from "./tiles.js";
 
 const DEFAULT_PAGE_SIZE = 50;
 /** A checkpoint last witnessed longer ago than this draws a warning. */
@@ -47,7 +48,15 @@ interface LogState {
   publishers: Set<string>;
   /** Indices of the entries passing the current filter, newest first. */
   view: number[];
+  /** Whether every entry of the tree in hand has been checked. */
   done: boolean;
+  /** The signed checkpoint in hand, as served, and what verifying it found. */
+  checkpointRaw: string | null;
+  result: CheckpointResult | null;
+  /** A check for a newer checkpoint is under way. */
+  refreshing: boolean;
+  /** The log has contradicted itself; see reportInconsistency. */
+  inconsistent: boolean;
 }
 
 type StepId = "step-log" | "step-quorum" | "step-root" | "step-entries";
@@ -279,6 +288,10 @@ async function load(origin: string, attempt = 0): Promise<void> {
     publishers: new Set(),
     view: [],
     done: false,
+    checkpointRaw: null,
+    result: null,
+    refreshing: false,
+    inconsistent: false,
   };
   state = s;
   const live = () => state === s;
@@ -300,20 +313,14 @@ async function load(origin: string, attempt = 0): Promise<void> {
     dialog.close();
   }
   $("detail-body").replaceChildren();
-
-  /** Marks the steps from `from` on as not reached. */
-  const skipSteps = (from: number) => {
-    for (const id of STEPS.slice(from)) setStep(id, "", "Not checked.");
-  };
+  $("checked").textContent = "";
 
   try {
     // 1 and 2: the checkpoint must satisfy the policy.
     setStep("step-log", "busy", "Fetching checkpoint…");
     let raw: string;
     try {
-      // The "wrong log" simulation serves a different log's checkpoint.
-      const other = fault?.checkpointFromOtherLog ? origins.find((o) => o !== origin) : undefined;
-      raw = await (other ? new LogClient(logBaseUrl(other), undefined, abort.signal) : s.client).checkpoint();
+      raw = await fetchCheckpoint(s);
     } catch (e) {
       if (!live()) return;
       if (e instanceof HttpError && e.status === 404) {
@@ -324,65 +331,14 @@ async function load(origin: string, attempt = 0): Promise<void> {
       }
       throw e;
     }
-    const result = await verifyCheckpoint(policy, raw, {
-      expectedOrigin: origin,
-      disabledAlgs: new Set(fault?.disabledAlgs),
-    });
+    const result = await verifyFetched(s, raw);
     if (!live()) return;
     const cp = result.checkpoint;
     s.size = cp.size;
+    s.checkpointRaw = raw;
+    s.result = result;
     renderCheckpoint(s, result);
-
-    if (cp.origin !== origin) {
-      setStep("step-log", "fail", `The checkpoint served is for ${cp.origin}, not ${origin}.`);
-      skipSteps(1);
-      notice("The checkpoint is for a different log, so the log's contents are not shown.", true);
-      return;
-    }
-
-    // A signature that fails beside ones that pass does not reject the
-    // checkpoint, but it is never shown as a clean pass either.
-    const logSigs = result.signatures.filter((x) => x.role === "log");
-    const logAlgs = (status: SignatureResult["status"]) =>
-      logSigs.filter((x) => x.status === status).map((x) => x.algName).join(" + ");
-    const logUnsupportedOnly = !result.logSigned && logAlgs("unsupported") !== "" && logAlgs("invalid") === "";
-    if (result.logSigned) {
-      setStep("step-log", logAlgs("invalid") ? "warn" : "ok", `Signed by the log (${logAlgs("valid")})` +
-        (logAlgs("invalid") ? `; its ${logAlgs("invalid")} signature is invalid` : "") +
-        (logAlgs("unsupported") ? `; ${logAlgs("unsupported")} not supported by this browser` : "") + ".");
-    } else if (logUnsupportedOnly) {
-      setStep("step-log", "fail", `The log signs with ${logAlgs("unsupported")} only, which this browser cannot verify.`);
-    } else {
-      setStep("step-log", "fail", logSigs.length > 0
-        ? "The log's signature is invalid."
-        : "Not signed by any log key in the policy.");
-    }
-
-    const q = result.quorum;
-    const witnessSigs = result.signatures.filter((x) => x.role === "witness");
-    const cosigners = witnessSigs.filter((x) => x.status === "valid");
-    const invalid = witnessSigs.filter((x) => x.status === "invalid").length;
-    const unchecked = witnessSigs.filter((x) => x.status === "unsupported").length;
-    // A checkpoint the witnesses have not seen for a day may not be the
-    // log's latest: someone serving an old one would look like this.
-    const witnessed = result.witnessedAt;
-    const stale = witnessed !== null && now() / 1000 - Number(witnessed) > STALE_AFTER_SECONDS;
-    const rule = q.kind === "group" ? `${q.count} of ${q.children.length} in “${q.name}”, ${q.threshold} required` : q.name;
-    const quorumBlockedByBrowser = !q.satisfied && result.quorumPossible;
-    setStep("step-quorum", !q.satisfied ? "fail" : invalid > 0 || stale ? "warn" : "ok",
-      `${cosigners.length} valid cosignature${cosigners.length === 1 ? "" : "s"}; ${rule}.` +
-      (witnessed !== null ? ` Witnessed ${fmtAge(witnessed, now())}${stale ? ", which is more than a day: this may not be the log's latest checkpoint" : ""}.` : "") +
-      (invalid > 0 ? ` ${invalid} cosignature${invalid === 1 ? " is" : "s are"} invalid.` : "") +
-      (unchecked > 0 ? ` ${unchecked} could not be checked in this browser.` : "") +
-      (quorumBlockedByBrowser ? " They would be enough to meet the quorum." : ""));
-
-    if (!result.ok) {
-      skipSteps(2);
-      notice(logUnsupportedOnly || quorumBlockedByBrowser
-        ? "This browser cannot verify ML-DSA-44 signatures, which this checkpoint depends on, so the log's contents are not shown. A current version of Chrome can."
-        : `The checkpoint does not satisfy the trust policy (${result.problems.join("; ")}), so the log's contents are not shown.`, true);
-      return;
-    }
+    if (!showCheckpointSteps(s, result)) return;
 
     // 3: every leaf hash, from the level-0 tiles, must hash up to the
     // checkpoint's root. This binds the whole log, not just one entry.
@@ -401,21 +357,12 @@ async function load(origin: string, attempt = 0): Promise<void> {
       notice("The log's tiles do not hash to the witnessed checkpoint, so its contents are not shown.", true);
       return;
     }
-    const rootText = `Recomputed from ${count(cp.size)} leaf hashes; matches the checkpoint.`;
-    setStep("step-root", "busy", `${rootText} Checking interior tiles…`);
-
+    setStep("step-root", "busy", `${rootText(cp.size)} Checking interior tiles…`);
     // The viewer never relies on the log's tiles above level 0, but a log that
     // serves ones inconsistent with its leaves is broken, so check them too.
-    const { checked: interiorTiles, mismatched } = await verifyInteriorTiles(s.client, leafHashes, cp.size);
+    const interior = await verifyInteriorTiles(s.client, leafHashes, cp.size);
     if (!live()) return;
-    if (mismatched.length > 0) {
-      setStep("step-root", "fail", `The leaf hashes match the checkpoint, but the log serves interior tiles that do not match them: ${mismatched.join(", ")}.`);
-      notice("The log is serving interior hash tiles that disagree with its own leaves. The entries below are still checked against the witnessed checkpoint.", true);
-    } else {
-      setStep("step-root", "ok", rootText + (interiorTiles === 0
-        ? " The log is too small to have interior tiles."
-        : ` The log's ${count(interiorTiles)} interior tile${interiorTiles === 1 ? " matches" : "s match"} too.`));
-    }
+    showRootStep(cp.size, interior);
     s.leafHashes = leafHashes;
 
     // 4: entries, newest first, each checked against its leaf hash.
@@ -424,56 +371,13 @@ async function load(origin: string, attempt = 0): Promise<void> {
     updateEntriesStep(s);
     applyFilter();
     openDetailFromRoute();
-    await pool(tiles.toReversed(), 4, async (t) => {
-      if (!live()) return;
-      const bundle = await s.client.entryBundle(t);
-      const altered = fault?.entry ? faultTargets(cp.size) : [];
-      for (const [i, served] of bundle.entries()) {
-        const index = t.index * TILE_WIDTH + i;
-        // A simulated failure alters an entry either as served, before it is
-        // compared with its leaf hash, or as if logged that way, after.
-        const rewrite = fault?.entry && altered.includes(index) ? fault.entry : null;
-        const bytes = rewrite && fault?.entryStage === "served" ? rewrite(served) : served;
-        const lh = await leafHash(bytes);
-        const decoded = await decodeEntry(rewrite && fault?.entryStage === "logged" ? rewrite(bytes) : bytes);
-        if (!live()) return;
-        const inLog = bytesEqual(lh, leafHashes.subarray(index * 32, index * 32 + 32));
-        const e: Entry = {
-          ...decoded,
-          index,
-          leafHash: lh,
-          inLog,
-          ok: inLog && !decoded.error && decoded.checks.contentHash === true && decoded.checks.signature === true,
-          haystack: haystack(index, decoded),
-        };
-        if (!inLog) s.failures.leaf++;
-        if (e.error) s.failures.parse++;
-        else {
-          if (e.checks.contentHash !== true) s.failures.contentHash++;
-          if (e.checks.signature !== true) s.failures.signature++;
-        }
-        const publisher = e.summary?.publisher;
-        if (publisher && !s.publishers.has(publisher)) {
-          s.publishers.add(publisher);
-          const select = $<HTMLSelectElement>("f-publisher");
-          select.length = 1;
-          select.append(...[...s.publishers].sort().map((p) => new Option(p, p)));
-          // The route may name a publisher whose entries had not loaded yet.
-          select.value = ui.publisher;
-        }
-        s.entries[index] = e;
-        s.loaded++;
-        // An entry opened by link shows as soon as it arrives, not at the end.
-        if (index === ui.entry) openDetailFromRoute();
-      }
-      updateEntriesStep(s);
-      scheduleFilter();
-    });
+    await pool(tiles.toReversed(), 4, (t) => ingestBundle(s, t, 0));
     if (!live()) return;
     s.done = true;
     updateEntriesStep(s);
     applyFilter();
     openDetailFromRoute();
+    markChecked(true);
   } catch (e) {
     if (!live()) return;
     // A partial tile is replaced as the log grows; if ours has gone, the
@@ -486,6 +390,275 @@ async function load(origin: string, attempt = 0): Promise<void> {
     for (const id of STEPS) {
       if ($(id).dataset.state === "busy") setStep(id, "fail", "Failed.");
     }
+  }
+}
+
+/** Marks the steps from `from` on as not reached. */
+function skipSteps(from: number): void {
+  for (const id of STEPS.slice(from)) setStep(id, "", "Not checked.");
+}
+
+function fetchCheckpoint(s: LogState): Promise<string> {
+  // The "wrong log" simulation serves a different log's checkpoint.
+  const other = faultById(s.fault)?.checkpointFromOtherLog ? origins.find((o) => o !== s.origin) : undefined;
+  return (other ? new LogClient(logBaseUrl(other), undefined, s.abort.signal) : s.client).checkpoint();
+}
+
+function verifyFetched(s: LogState, raw: string): Promise<CheckpointResult> {
+  return verifyCheckpoint(policy, raw, {
+    expectedOrigin: s.origin,
+    disabledAlgs: new Set(faultById(s.fault)?.disabledAlgs),
+  });
+}
+
+/**
+ * Shows the outcome of the two checkpoint steps, and says why if the
+ * checkpoint is rejected. Returns whether the log's contents may be shown.
+ */
+function showCheckpointSteps(s: LogState, result: CheckpointResult): boolean {
+  const cp = result.checkpoint;
+  if (cp.origin !== s.origin) {
+    setStep("step-log", "fail", `The checkpoint served is for ${cp.origin}, not ${s.origin}.`);
+    skipSteps(1);
+    notice("The checkpoint is for a different log, so the log's contents are not shown.", true);
+    return false;
+  }
+
+  // A signature that fails beside ones that pass does not reject the
+  // checkpoint, but it is never shown as a clean pass either.
+  const logSigs = result.signatures.filter((x) => x.role === "log");
+  const logAlgs = (status: SignatureResult["status"]) =>
+    logSigs.filter((x) => x.status === status).map((x) => x.algName).join(" + ");
+  const logUnsupportedOnly = !result.logSigned && logAlgs("unsupported") !== "" && logAlgs("invalid") === "";
+  if (result.logSigned) {
+    setStep("step-log", logAlgs("invalid") ? "warn" : "ok", `Signed by the log (${logAlgs("valid")})` +
+      (logAlgs("invalid") ? `; its ${logAlgs("invalid")} signature is invalid` : "") +
+      (logAlgs("unsupported") ? `; ${logAlgs("unsupported")} not supported by this browser` : "") + ".");
+  } else if (logUnsupportedOnly) {
+    setStep("step-log", "fail", `The log signs with ${logAlgs("unsupported")} only, which this browser cannot verify.`);
+  } else {
+    setStep("step-log", "fail", logSigs.length > 0
+      ? "The log's signature is invalid."
+      : "Not signed by any log key in the policy.");
+  }
+
+  const q = result.quorum;
+  const witnessSigs = result.signatures.filter((x) => x.role === "witness");
+  const cosigners = witnessSigs.filter((x) => x.status === "valid");
+  const invalid = witnessSigs.filter((x) => x.status === "invalid").length;
+  const unchecked = witnessSigs.filter((x) => x.status === "unsupported").length;
+  // A checkpoint the witnesses have not seen for a day may not be the
+  // log's latest: someone serving an old one would look like this.
+  const witnessed = result.witnessedAt;
+  const stale = witnessed !== null && now() / 1000 - Number(witnessed) > STALE_AFTER_SECONDS;
+  const rule = q.kind === "group" ? `${q.count} of ${q.children.length} in “${q.name}”, ${q.threshold} required` : q.name;
+  const quorumBlockedByBrowser = !q.satisfied && result.quorumPossible;
+  setStep("step-quorum", !q.satisfied ? "fail" : invalid > 0 || stale ? "warn" : "ok",
+    `${cosigners.length} valid cosignature${cosigners.length === 1 ? "" : "s"}; ${rule}.` +
+    (witnessed !== null ? ` Witnessed ${fmtAge(witnessed, now())}${stale ? ", which is more than a day: this may not be the log's latest checkpoint" : ""}.` : "") +
+    (invalid > 0 ? ` ${invalid} cosignature${invalid === 1 ? " is" : "s are"} invalid.` : "") +
+    (unchecked > 0 ? ` ${unchecked} could not be checked in this browser.` : "") +
+    (quorumBlockedByBrowser ? " They would be enough to meet the quorum." : ""));
+
+  if (!result.ok) {
+    skipSteps(2);
+    notice(logUnsupportedOnly || quorumBlockedByBrowser
+      ? "This browser cannot verify ML-DSA-44 signatures, which this checkpoint depends on, so the log's contents are not shown. A current version of Chrome can."
+      : `The checkpoint does not satisfy the trust policy (${result.problems.join("; ")}), so the log's contents are not shown.`, true);
+    return false;
+  }
+  return true;
+}
+
+const rootText = (size: number) => `Recomputed from ${count(size)} leaf hashes; matches the checkpoint.`;
+
+/** Shows the Merkle root step once the leaves match the checkpoint. */
+function showRootStep(size: number, interior: { checked: number; mismatched: string[] }): void {
+  if (interior.mismatched.length > 0) {
+    setStep("step-root", "fail", `The leaf hashes match the checkpoint, but the log serves interior tiles that do not match them: ${interior.mismatched.join(", ")}.`);
+    notice("The log is serving interior hash tiles that disagree with its own leaves. The entries below are still checked against the witnessed checkpoint.", true);
+  } else {
+    setStep("step-root", "ok", rootText(size) + (interior.checked === 0
+      ? " The log is too small to have interior tiles."
+      : ` The log's ${count(interior.checked)} interior tile${interior.checked === 1 ? " matches" : "s match"} too.`));
+  }
+}
+
+/**
+ * Fetches one entry bundle and checks and records its entries, skipping those
+ * before `from`, which an earlier load already holds.
+ */
+async function ingestBundle(s: LogState, t: TileRef, from: number): Promise<void> {
+  const live = () => state === s;
+  const leafHashes = s.leafHashes;
+  if (!live() || !leafHashes) return;
+  const fault = faultById(s.fault);
+  const bundle = await s.client.entryBundle(t);
+  const altered = fault?.entry ? faultTargets(s.size) : [];
+  for (const [i, served] of bundle.entries()) {
+    const index = t.index * TILE_WIDTH + i;
+    if (index < from) continue;
+    // A simulated failure alters an entry either as served, before it is
+    // compared with its leaf hash, or as if logged that way, after.
+    const rewrite = fault?.entry && altered.includes(index) ? fault.entry : null;
+    const bytes = rewrite && fault?.entryStage === "served" ? rewrite(served) : served;
+    const lh = await leafHash(bytes);
+    const decoded = await decodeEntry(rewrite && fault?.entryStage === "logged" ? rewrite(bytes) : bytes);
+    if (!live()) return;
+    const inLog = bytesEqual(lh, leafHashes.subarray(index * 32, index * 32 + 32));
+    const e: Entry = {
+      ...decoded,
+      index,
+      leafHash: lh,
+      inLog,
+      ok: inLog && !decoded.error && decoded.checks.contentHash === true && decoded.checks.signature === true,
+      haystack: haystack(index, decoded),
+    };
+    if (!inLog) s.failures.leaf++;
+    if (e.error) s.failures.parse++;
+    else {
+      if (e.checks.contentHash !== true) s.failures.contentHash++;
+      if (e.checks.signature !== true) s.failures.signature++;
+    }
+    const publisher = e.summary?.publisher;
+    if (publisher && !s.publishers.has(publisher)) {
+      s.publishers.add(publisher);
+      const select = $<HTMLSelectElement>("f-publisher");
+      select.length = 1;
+      select.append(...[...s.publishers].sort().map((p) => new Option(p, p)));
+      // The route may name a publisher whose entries had not loaded yet.
+      select.value = ui.publisher;
+    }
+    s.entries[index] = e;
+    s.loaded++;
+    // An entry opened by link shows as soon as it arrives, not at the end.
+    if (index === ui.entry) openDetailFromRoute();
+  }
+  updateEntriesStep(s);
+  scheduleFilter();
+}
+
+// ---------------------------------------------------------------------------
+// Following the log as it grows
+
+/** How often to look for a new checkpoint. */
+const REFRESH_SECONDS = 60;
+let lastChecked = 0;
+
+function markChecked(ok: boolean, note?: string): void {
+  if (ok) lastChecked = Date.now();
+  $("checked").textContent = ok
+    ? `Checked ${new Date().toLocaleTimeString()}${note ? `; ${note}` : ""}`
+    : "Last check for updates failed; will retry";
+}
+
+/**
+ * The log has shown two states that cannot both be true of an append-only
+ * log. This is the misbehaviour transparency logs exist to expose, so it is
+ * reported, not smoothed over, and the page stops following the log.
+ */
+function reportInconsistency(s: LogState, what: string): void {
+  s.inconsistent = true;
+  setStep("step-root", "fail", what);
+  notice(`${what} A log may only ever add entries. The entries below are those verified against the earlier checkpoint; the page has stopped following this log.`, true);
+  $("checked").textContent = "Stopped following";
+}
+
+/**
+ * Looks for a newer checkpoint and, if the log has grown, verifies and adds
+ * the new entries without reloading what is already held.
+ *
+ * The new tree must extend the old one. The leaf hashes already verified are
+ * kept, not fetched again, so hashing them together with the new ones to the
+ * new checkpoint's root shows that nothing published earlier has changed.
+ */
+async function refresh(): Promise<void> {
+  const s = state;
+  if (!s || !s.done || s.refreshing || s.inconsistent || !s.leafHashes || !s.result) return;
+  const live = () => state === s;
+  s.refreshing = true;
+  let committed = false;
+  try {
+    const raw = await fetchCheckpoint(s);
+    if (!live()) return;
+    if (raw === s.checkpointRaw) {
+      // Nothing new; the witnessed age shown still moves on.
+      showCheckpointSteps(s, s.result);
+      return markChecked(true);
+    }
+    const result = await verifyFetched(s, raw);
+    if (!live()) return;
+    // A checkpoint the policy rejects gets the full treatment of a fresh load.
+    if (!result.ok) return void load(s.origin);
+
+    const old = s.result.checkpoint;
+    const cp = result.checkpoint;
+    const sameTree = cp.size === old.size && bytesEqual(cp.hash, old.hash);
+    if (cp.size < old.size) {
+      // An older checkpoint than the one in hand. If it is an earlier state of
+      // the same tree this is only staleness somewhere between the log and
+      // here, and the newer one stands. If not, the log has forked.
+      const earlier = await rootFromLeafHashes(s.leafHashes, cp.size);
+      if (!live()) return;
+      if (!bytesEqual(earlier, cp.hash)) {
+        return reportInconsistency(s, `The log now presents a tree of ${count(cp.size)} entries that is not the first ${count(cp.size)} of the ${count(old.size)} verified before.`);
+      }
+      return markChecked(true, `was served an older checkpoint, of ${count(cp.size)} entries`);
+    }
+    if (cp.size === old.size && !sameTree) {
+      return reportInconsistency(s, `The log now presents a different tree of the same ${count(cp.size)} entries: root ${b64Encode(cp.hash)}, where it was ${b64Encode(old.hash)}.`);
+    }
+    if (sameTree) {
+      // The same tree, witnessed again.
+      s.checkpointRaw = raw;
+      s.result = result;
+      renderCheckpoint(s, result);
+      showCheckpointSteps(s, result);
+      return markChecked(true);
+    }
+
+    const growth = await extendLeafHashes(s.client, s.leafHashes, old.size, cp.size);
+    if (!live()) return;
+    if (growth.kind === "rewritten") {
+      return reportInconsistency(s, `The log now serves a different hash for entry ${count(growth.index)}, which it had already published.`);
+    }
+    const root = await rootFromLeafHashes(growth.leafHashes, cp.size);
+    if (!live()) return;
+    if (!bytesEqual(root, cp.hash)) {
+      return reportInconsistency(s, `The log's new tree of ${count(cp.size)} entries does not extend the ${count(old.size)} verified before: with those kept, the root is ${b64Encode(root)}, but the new checkpoint says ${b64Encode(cp.hash)}.`);
+    }
+    const interior = await verifyInteriorTiles(s.client, growth.leafHashes, cp.size);
+    if (!live()) return;
+
+    // Verified: take up the new tree, then fetch the entries added to it.
+    committed = true;
+    s.done = false;
+    s.size = cp.size;
+    s.leafHashes = growth.leafHashes;
+    s.entries.length = cp.size;
+    s.checkpointRaw = raw;
+    s.result = result;
+    renderCheckpoint(s, result);
+    showCheckpointSteps(s, result);
+    showRootStep(cp.size, interior);
+    updateEntriesStep(s);
+    applyFilter();
+    await pool(tilesForSize(cp.size).slice(Math.floor(old.size / TILE_WIDTH)), 4, (t) => ingestBundle(s, t, old.size));
+    if (!live()) return;
+    s.done = true;
+    updateEntriesStep(s);
+    applyFilter();
+    markChecked(true);
+  } catch (e) {
+    if (!live()) return;
+    // Half-way through taking up a new tree there is no tidy way back, so
+    // start over. Otherwise leave what is shown alone and try again later:
+    // a failed request, or a partial tile replaced as the log grew again.
+    if (committed) return void load(s.origin);
+    console.warn(e);
+    markChecked(false);
+  } finally {
+    s.refreshing = false;
   }
 }
 
@@ -884,6 +1057,13 @@ function init(): void {
   window.addEventListener("hashchange", onRoute);
   window.addEventListener("popstate", onRoute);
   onRoute();
+
+  // Follow the log while the page is being looked at, and catch up when it
+  // is looked at again.
+  setInterval(() => { if (!document.hidden) void refresh(); }, REFRESH_SECONDS * 1000);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && Date.now() - lastChecked > REFRESH_SECONDS * 1000) void refresh();
+  });
 }
 
 init();
