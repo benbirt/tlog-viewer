@@ -4,6 +4,7 @@
 import { b64Encode, type Bytes, bytesEqual, hex } from "./bytes.js";
 import { logBaseUrl } from "./config.js";
 import { type DecodedEntry, decodeEntry, type Summary } from "./entry.js";
+import { verifyInteriorTiles } from "./interior.js";
 import { leafHash, rootFromLeafHashes } from "./merkle.js";
 import { type CheckpointResult, type SignatureResult, verifyCheckpoint } from "./note.js";
 import { logOrigins, parsePolicy, type QuorumNode } from "./policy.js";
@@ -230,7 +231,21 @@ async function load(origin: string, attempt = 0): Promise<void> {
       notice("The log's tiles do not hash to the witnessed checkpoint, so its contents are not shown.", true);
       return;
     }
-    setStep("step-root", "ok", `Recomputed from ${count(cp.size)} leaf hashes; matches the checkpoint.`);
+    const rootText = `Recomputed from ${count(cp.size)} leaf hashes; matches the checkpoint.`;
+    setStep("step-root", "busy", `${rootText} Checking interior tiles…`);
+
+    // The viewer never relies on the log's tiles above level 0, but a log that
+    // serves ones inconsistent with its leaves is broken, so check them too.
+    const { checked: interiorTiles, mismatched } = await verifyInteriorTiles(s.client, leafHashes, cp.size);
+    if (!live()) return;
+    if (mismatched.length > 0) {
+      setStep("step-root", "fail", `The leaf hashes match the checkpoint, but the log serves interior tiles that do not match them: ${mismatched.join(", ")}.`);
+      notice("The log is serving interior hash tiles that disagree with its own leaves. The entries below are still checked against the witnessed checkpoint.", true);
+    } else {
+      setStep("step-root", "ok", rootText + (interiorTiles === 0
+        ? " The log is too small to have interior tiles."
+        : ` The log's ${count(interiorTiles)} interior tile${interiorTiles === 1 ? " matches" : "s match"} too.`));
+    }
     s.leafHashes = leafHashes;
 
     // 4: entries, newest first, each checked against its leaf hash.
