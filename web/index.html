@@ -19,6 +19,7 @@
 </header>
 
 <main class="wrap">
+  <div id="debug-banner" class="notice bad debug" role="alert" hidden></div>
   <p class="lede">Project Oak endorsements published to the PAIC logs. Every check is run here, in this
     browser: a tick means this page verified it, not that someone else said so.</p>
 
@@ -91,6 +92,12 @@
   <p>Trust policy: <span id="policy-source"></span>. Log and witness keys are compiled into this page.</p>
   <p>An entry's signature check shows that the endorsement was signed by the key published alongside it.
     Whether that key is one you should trust is not something this page can tell you.</p>
+  <details id="debug">
+    <summary>Debug: simulate a failure</summary>
+    <p>Each of these alters the log's data inside this page, after it is fetched, to show how the page
+      responds. None can make a check pass. The choice is kept in the address, so a view can be shared.</p>
+    <ul id="debug-list"></ul>
+  </details>
 </footer>
 </body>
 </html>

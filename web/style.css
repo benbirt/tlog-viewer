@@ -184,3 +184,12 @@ dialog#detail { overscroll-behavior: contain; }
 .notice.bad { border-color: var(--bad); color: var(--bad); }
 .foot { margin-top: 36px; padding-bottom: 36px; font-size: 12.5px; color: var(--muted); display: grid; gap: 6px; max-width: 1240px; }
 .foot p { max-width: 90ch; }
+
+.notice.debug { margin-top: 16px; }
+.notice.debug[hidden] { display: none; }
+.notice.debug a { color: inherit; font-weight: 600; }
+#debug { margin-top: 10px; }
+#debug > summary { cursor: pointer; }
+#debug p { margin: 8px 0; }
+#debug ul { margin: 0; padding-left: 18px; display: grid; gap: 4px; max-width: 90ch; }
+#debug a[aria-current] { font-weight: 700; }

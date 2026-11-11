@@ -10,7 +10,8 @@ For the selected log it:
 
 1. fetches the checkpoint and checks the log's signature (Ed25519 and
    ML-DSA-44) against the trust policy;
-2. checks the witness cosignatures and evaluates the policy's quorum rule;
+2. checks the witness cosignatures and evaluates the policy's quorum rule,
+   warning if the quorum last saw the log in this state more than a day ago;
 3. fetches every level-0 hash tile and recomputes the Merkle root, which must
    equal the witnessed checkpoint's, then checks that the interior hash tiles
    the log serves are the ones those leaves imply;
@@ -56,6 +57,17 @@ change them with pnpm through Bazel (see `MODULE.bazel`).
 - `tests/testdata/` — a real checkpoint, tiles and entries captured from
   `paic.google.com/log/0`, with the policy as it stood then, so the tests keep
   passing when the pinned policy changes.
+
+Everything about the view is kept in the address: the log, search and filters,
+page, whether the checkpoint panel is open and which entry's drawer is open. Any
+view can be linked to or reloaded, and Back steps through pages and drawers.
+
+The footer has a debug menu that simulates failures (`web/js/faults.ts`): bad
+log signatures and cosignatures, a missing quorum, another log's checkpoint, an
+old checkpoint, a browser without ML-DSA-44, tiles that do not match, and
+entries that are altered or bad. Each alters data inside the page after it is
+fetched, so the real failure paths run; none can make a check pass, and a
+simulation is always announced at the top of the page.
 
 ML-DSA-44 needs a recent browser (Chrome 157 is known to work). Where WebCrypto
 lacks it, those signatures are reported as not checked and the quorum is
