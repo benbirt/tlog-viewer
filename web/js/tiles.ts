@@ -85,9 +85,10 @@ export class LogClient {
     return (await this.#get("checkpoint", { cache: "no-store" })).text();
   }
 
-  async hashTile({ index, width }: TileRef): Promise<Bytes> {
-    const bytes = await this.#bytes(tilePath(0, index, width));
-    if (bytes.length !== width * 32) throw new Error(`hash tile ${index} has the wrong size`);
+  /** Fetches a hash tile; level 0 holds leaf hashes. */
+  async hashTile({ index, width }: TileRef, level: number = 0): Promise<Bytes> {
+    const bytes = await this.#bytes(tilePath(level, index, width));
+    if (bytes.length !== width * 32) throw new Error(`level-${level} hash tile ${index} has the wrong size`);
     return bytes;
   }
 

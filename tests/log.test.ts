@@ -3,7 +3,8 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { type Bytes, hex } from "../web/js/bytes.js";
 import { decodeEntry, derSignatureToRaw } from "../web/js/entry.js";
-import { leafHash, rootFromLeafHashes } from "../web/js/merkle.js";
+import { verifyInteriorTiles } from "../web/js/interior.js";
+import { interiorTileHashes, leafHash, rootFromLeafHashes } from "../web/js/merkle.js";
 import { encodeIndex, HttpError, LogClient, parseBundle, tilePath, tilesForSize } from "../web/js/tiles.js";
 
 const read = (f: string): Bytes => new Uint8Array(readFileSync(new URL("testdata/" + f, import.meta.url)));
@@ -50,6 +51,48 @@ test("Merkle tree heads", async () => {
   assert.equal(hex(await rootFromLeafHashes(tile0)), hex(read("tile-1-000-first-hash.bin")));
 });
 
+test("interior tile hashes", async () => {
+  // 255 leaves: no complete group, so no interior tiles.
+  assert.deepEqual(await interiorTileHashes(tile0, 255), []);
+  // 256 real leaves: one level-1 hash, as the log itself serves it.
+  const one = await interiorTileHashes(tile0);
+  assert.equal(one.length, 1);
+  assert.equal(hex(one[0]!), hex(read("tile-1-000-first-hash.bin")));
+  // 600 leaves: two complete groups; the 88 left over belong to no tile hash.
+  const leaves = new Uint8Array(600 * 32);
+  for (let i = 0; i < leaves.length; i++) leaves[i] = (i * 7) & 0xff;
+  const two = await interiorTileHashes(leaves);
+  assert.equal(two.length, 1);
+  assert.equal(hex(two[0]!), hex(await rootFromLeafHashes(leaves, 256)) + hex(await rootFromLeafHashes(leaves.subarray(8192), 256)));
+  // 65,536 leaves fill a level-2 hash, which is the head of the whole tree.
+  const big = new Uint8Array(65536 * 32);
+  for (let i = 0; i < big.length; i += 32) new DataView(big.buffer).setUint32(i, i);
+  const levels = await interiorTileHashes(big);
+  assert.deepEqual(levels.map((l) => l.length / 32), [256, 1]);
+  assert.equal(hex(levels[1]!), hex(await rootFromLeafHashes(big)));
+});
+
+test("interior tiles are checked against the leaves", async () => {
+  // A log of 600 leaves has one partial level-1 tile holding two hashes.
+  const leaves = new Uint8Array(600 * 32);
+  for (let i = 0; i < leaves.length; i++) leaves[i] = (i * 7) & 0xff;
+  const [tile] = await interiorTileHashes(leaves);
+  assert.ok(tile);
+  const serve = (body: Bytes) => new LogClient("https://log.example/", async (url) =>
+    url === "https://log.example/tile/1/000.p/2" ? new Response(body) : new Response("no", { status: 404 }));
+
+  assert.deepEqual(await verifyInteriorTiles(serve(tile), leaves, 600), { checked: 1, mismatched: [] });
+
+  const corrupt = tile.slice();
+  corrupt[40]! ^= 1;
+  assert.deepEqual(await verifyInteriorTiles(serve(corrupt), leaves, 600), { checked: 1, mismatched: ["tile/1/000.p/2"] });
+
+  // Too small for interior tiles: nothing is fetched.
+  assert.deepEqual(await verifyInteriorTiles(serve(tile), leaves, 255), { checked: 0, mismatched: [] });
+  // A missing tile is an error, not a pass.
+  await assert.rejects(verifyInteriorTiles(serve(tile), leaves.subarray(0, 300 * 32), 300), (e) => e instanceof HttpError);
+});
+
 test("truncated bundles are rejected", () => {
   assert.throws(() => parseBundle(bundle.subarray(0, bundle.length - 1)), /truncated/);
   assert.throws(() => parseBundle(Uint8Array.of(0)), /truncated/);
@@ -61,6 +104,7 @@ test("LogClient checks tile sizes and reports HTTP errors", async () => {
     served[url] ? new Response(served[url]) : new Response("no", { status: 404 }));
   assert.equal((await client.entryBundle({ index: 0, width: 7 })).length, 7);
   assert.equal((await client.hashTile({ index: 0, width: 256 })).length, 8192);
+  await assert.rejects(client.hashTile({ index: 0, width: 256 }, 1), (e) => e instanceof HttpError && e.url.endsWith("/tile/1/000"));
   await assert.rejects(client.hashTile({ index: 1, width: 3 }), (e) => e instanceof HttpError && e.status === 404);
 });
 

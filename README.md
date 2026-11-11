@@ -12,7 +12,8 @@ For the selected log it:
    ML-DSA-44) against the trust policy;
 2. checks the witness cosignatures and evaluates the policy's quorum rule;
 3. fetches every level-0 hash tile and recomputes the Merkle root, which must
-   equal the witnessed checkpoint's;
+   equal the witnessed checkpoint's, then checks that the interior hash tiles
+   the log serves are the ones those leaves imply;
 4. fetches the entry bundles and, for each entry, checks that it hashes to its
    leaf, that the recorded SHA-256 matches the embedded in-toto statement, and
    that the ECDSA signature over the statement verifies under the embedded key.
@@ -43,8 +44,8 @@ The code is TypeScript, compiled file-for-file by `tsc` with no bundler and no
 runtime dependencies. TypeScript and Node's types are the only npm packages;
 change them with pnpm through Bazel (see `MODULE.bazel`).
 
-- `web/js/policy.ts`, `note.ts`, `merkle.ts`, `tiles.ts`, `entry.ts` — the
-  verifier, with no DOM dependencies.
+- `web/js/policy.ts`, `note.ts`, `merkle.ts`, `tiles.ts`, `interior.ts`,
+  `entry.ts` — the verifier, with no DOM dependencies.
 - `web/js/app.ts` — the UI.
 - `tests/testdata/` — a real checkpoint, tiles and entries captured from
   `paic.google.com/log/0`, with the policy as it stood then, so the tests keep
