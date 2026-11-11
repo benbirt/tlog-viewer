@@ -309,14 +309,14 @@ viewerTest("nothing spills off a phone screen", async (v) => {
   await v.goto("#log=test.example/log/0&checkpoint=1");
   // How far the content is wider than the space it has, scrollbar excluded.
   const overflow = () => v.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
-  assert.equal(await overflow(), 0);
+  assert.ok(await overflow() <= 0);
   // The header row has exactly as many visible cells as each row beneath it.
   const cells = (selector: string) => v.page.locator(selector).first().evaluate((row) =>
     [...row.children].filter((c) => getComputedStyle(c).display !== "none").length);
   assert.equal(await cells(".row.head"), await cells("#rows .row"));
   await v.page.locator("#rows .row a").first().click();
   await v.drawer(true);
-  assert.equal(await overflow(), 0);
+  assert.ok(await overflow() <= 0);
 }, { width: 390, height: 844 });
 
 viewerTest("opening the drawer does not move the page behind it", async (v) => {
