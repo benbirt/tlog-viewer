@@ -20,6 +20,8 @@ const DEFAULT_PAGE_SIZE = 50;
 /** A checkpoint last witnessed longer ago than this draws a warning. */
 const STALE_AFTER_SECONDS = 24 * 60 * 60;
 const policy = parsePolicy(POLICY_TEXT);
+/** What to call a checkpoint that passed: witnesses are only involved if the policy asks for them. */
+const checkpointWord = policy.quorum === "none" ? "verified" : "witnessed";
 const origins = logOrigins(policy);
 
 type Entry = CheckedEntry;
@@ -39,7 +41,7 @@ interface LogState {
   leafHashes: Bytes | null;
   entries: (Entry | undefined)[];
   loaded: number;
-  failures: { leaf: number; parse: number; contentHash: number; signature: number };
+  failures: { leaf: number; parse: number; contentHash: number; signature: number; unchecked: number };
   publishers: Set<string>;
   /** Indices of the entries passing the current filter, newest first. */
   view: number[];
@@ -283,7 +285,7 @@ async function load(origin: string, attempt = 0): Promise<void> {
     leafHashes: null,
     entries: [],
     loaded: 0,
-    failures: { leaf: 0, parse: 0, contentHash: 0, signature: 0 },
+    failures: { leaf: 0, parse: 0, contentHash: 0, signature: 0, unchecked: 0 },
     publishers: new Set(),
     view: [],
     done: false,
@@ -343,7 +345,7 @@ async function load(origin: string, attempt = 0): Promise<void> {
     // 3: every leaf hash, from the level-0 tiles, must hash up to the
     // checkpoint's root. This binds the whole log, not just one entry.
     const tiles = tilesForSize(cp.size);
-    setStep("step-root", "busy", `Fetching ${tiles.length} hash tile${tiles.length === 1 ? "" : "s"}…`);
+    setStep("step-root", "busy", `Fetching ${tiles.length} leaf-hash tile${tiles.length === 1 ? "" : "s"}…`);
     const leafHashes = new Uint8Array(cp.size * 32);
     await pool(tiles, 6, async (t) => {
       if (live()) leafHashes.set(await s.client.hashTile(t), t.index * TILE_WIDTH * 32);
@@ -352,9 +354,9 @@ async function load(origin: string, attempt = 0): Promise<void> {
     const { root, interior: expected } = await s.workers.tree(leafHashes, cp.size);
     if (!live()) return;
     if (!bytesEqual(root, cp.hash)) {
-      setStep("step-root", "fail", `Recomputed ${b64Encode(root)}, checkpoint says ${b64Encode(cp.hash)}.`);
+      setStep("step-root", "fail", `Recomputed ${b64Encode(root)}; checkpoint says ${b64Encode(cp.hash)}.`);
       skipSteps(3);
-      notice("The log's tiles do not hash to the witnessed checkpoint, so its contents are not shown.", true);
+      notice(`The leaf-hash tiles do not hash to the ${checkpointWord} checkpoint, so the log's entries are not shown.`, true);
       return;
     }
     setStep("step-root", "busy", `${rootText(cp.size)} Checking interior tiles…`);
@@ -422,7 +424,7 @@ function showCheckpointSteps(s: LogState, result: CheckpointResult): boolean {
   if (cp.origin !== s.origin) {
     setStep("step-log", "fail", `The checkpoint served is for ${cp.origin}, not ${s.origin}.`);
     skipSteps(1);
-    notice("The checkpoint is for a different log, so the log's contents are not shown.", true);
+    notice("The checkpoint is for a different log, so the log's entries are not shown.", true);
     return false;
   }
 
@@ -435,13 +437,19 @@ function showCheckpointSteps(s: LogState, result: CheckpointResult): boolean {
   if (result.logSigned) {
     setStep("step-log", logAlgs("invalid") ? "warn" : "ok", `Signed by the log (${logAlgs("valid")})` +
       (logAlgs("invalid") ? `; its ${logAlgs("invalid")} signature is invalid` : "") +
-      (logAlgs("unsupported") ? `; ${logAlgs("unsupported")} not supported by this browser` : "") + ".");
+      (logAlgs("unsupported") ? `; this browser cannot verify ${logAlgs("unsupported")}` : "") + ".");
   } else if (logUnsupportedOnly) {
     setStep("step-log", "fail", `The log signs with ${logAlgs("unsupported")} only, which this browser cannot verify.`);
   } else {
+    // Say what became of each of the log's signatures: one may be invalid while
+    // another could not be checked.
+    const reasons = [
+      logAlgs("invalid") && `${logAlgs("invalid")} invalid`,
+      logAlgs("unsupported") && `this browser cannot verify ${logAlgs("unsupported")}`,
+    ].filter(Boolean);
     setStep("step-log", "fail", logSigs.length > 0
-      ? "The log's signature is invalid."
-      : "Not signed by any log key in the policy.");
+      ? `No valid log signature: ${reasons.join("; ")}.`
+      : "Not signed by any log key in the trust policy.");
   }
 
   const q = result.quorum;
@@ -452,21 +460,26 @@ function showCheckpointSteps(s: LogState, result: CheckpointResult): boolean {
   // A checkpoint the witnesses have not seen for a day may not be the
   // log's latest: someone serving an old one would look like this.
   const witnessed = result.witnessedAt;
-  const stale = witnessed !== null && now() / 1000 - Number(witnessed) > STALE_AFTER_SECONDS;
+  // A time no clock could have produced is not old, only wrong; fmtAge says so.
+  const stale = witnessed !== null && witnessed > 0n && witnessed <= MAX_UNIX_SECONDS &&
+    now() / 1000 - Number(witnessed) > STALE_AFTER_SECONDS;
   const rule = q.kind === "group" ? `${q.count} of ${q.children.length} in “${q.name}”, ${q.threshold} required` : q.name;
   const quorumBlockedByBrowser = !q.satisfied && result.quorumPossible;
   setStep("step-quorum", !q.satisfied ? "fail" : invalid > 0 || stale ? "warn" : "ok",
     `${cosigners.length} valid cosignature${cosigners.length === 1 ? "" : "s"}; ${rule}.` +
-    (witnessed !== null ? ` Witnessed ${fmtAge(witnessed, now())}${stale ? ", which is more than a day: this may not be the log's latest checkpoint" : ""}.` : "") +
+    (witnessed !== null ? ` Witnessed ${fmtAge(witnessed, now())}${stale ? ". More than 24 hours old; this may not be the log's latest checkpoint" : ""}.` : "") +
     (invalid > 0 ? ` ${invalid} cosignature${invalid === 1 ? " is" : "s are"} invalid.` : "") +
-    (unchecked > 0 ? ` ${unchecked} could not be checked in this browser.` : "") +
-    (quorumBlockedByBrowser ? " They would be enough to meet the quorum." : ""));
+    (unchecked > 0 ? ` ${unchecked} could not be verified by this browser.` : "") +
+    (quorumBlockedByBrowser ? " If valid, the quorum would be met." : ""));
 
+  // The algorithms this browser could not check, for saying which are missing.
+  const uncheckable = [...new Set(result.signatures.filter((x) => x.status === "unsupported").map((x) => x.algName ?? "unknown"))];
   if (!result.ok) {
     skipSteps(2);
     notice(logUnsupportedOnly || quorumBlockedByBrowser
-      ? "This browser cannot verify ML-DSA-44 signatures, which this checkpoint depends on, so the log's contents are not shown. A current version of Chrome can."
-      : `The checkpoint does not satisfy the trust policy (${result.problems.join("; ")}), so the log's contents are not shown.`, true);
+      ? `This browser cannot verify ${uncheckable.join(" or ")} signatures, which this checkpoint requires, so the log's entries are not shown.` +
+        (uncheckable.includes("ML-DSA-44") ? " A current version of Chrome can verify ML-DSA-44." : "")
+      : `The checkpoint does not satisfy the trust policy (${result.problems.join("; ")}), so the log's entries are not shown.`, true);
     return false;
   }
   return true;
@@ -477,8 +490,8 @@ const rootText = (size: number) => `Recomputed from ${count(size)} leaf hashes; 
 /** Shows the Merkle root step once the leaves match the checkpoint. */
 function showRootStep(size: number, interior: { checked: number; mismatched: string[] }): void {
   if (interior.mismatched.length > 0) {
-    setStep("step-root", "fail", `The leaf hashes match the checkpoint, but the log serves interior tiles that do not match them: ${interior.mismatched.join(", ")}.`);
-    notice("The log is serving interior hash tiles that disagree with its own leaves. The entries below are still checked against the witnessed checkpoint.", true);
+    setStep("step-root", "fail", `The leaf hashes match the checkpoint, but interior tile data disagrees: ${interior.mismatched.join(", ")}.`);
+    notice(`The log serves interior tiles that disagree with its leaf hashes. The entries below are still checked against the ${checkpointWord} checkpoint.`, true);
   } else {
     setStep("step-root", "ok", rootText(size) + (interior.checked === 0
       ? " The log is too small to have interior tiles."
@@ -505,8 +518,10 @@ async function ingestBundle(s: LogState, t: TileRef, from: number): Promise<void
     if (!e.inLog) s.failures.leaf++;
     if (e.error) s.failures.parse++;
     else {
-      if (e.checks.contentHash !== true) s.failures.contentHash++;
-      if (e.checks.signature !== true) s.failures.signature++;
+      if (e.checks.contentHash === false) s.failures.contentHash++;
+      if (e.checks.signature === false) s.failures.signature++;
+      // A check that could not be made is neither a pass nor a failure.
+      if (e.checks.contentHash === null || e.checks.signature === null) s.failures.unchecked++;
     }
     const publisher = e.summary?.publisher;
     if (publisher && !s.publishers.has(publisher)) {
@@ -548,7 +563,7 @@ function markChecked(ok: boolean, note?: string): void {
 function reportInconsistency(s: LogState, what: string): void {
   s.inconsistent = true;
   setStep("step-root", "fail", what);
-  notice(`${what} A log may only ever add entries. The entries below are those verified against the earlier checkpoint; the page has stopped following this log.`, true);
+  notice(`${what} A log must only add entries, never alter or remove them. The entries below are those verified against the earlier checkpoint; the page has stopped following this log.`, true);
   $("checked").textContent = "Stopped following";
 }
 
@@ -589,12 +604,12 @@ async function refresh(): Promise<void> {
       const earlier = await rootFromLeafHashes(s.leafHashes, cp.size);
       if (!live()) return;
       if (!bytesEqual(earlier, cp.hash)) {
-        return reportInconsistency(s, `The log now presents a tree of ${count(cp.size)} entries that is not the first ${count(cp.size)} of the ${count(old.size)} verified before.`);
+        return reportInconsistency(s, `The log now serves a tree of ${count(cp.size)} entries that differs from the first ${count(cp.size)} of the ${count(old.size)} verified earlier.`);
       }
-      return markChecked(true, `was served an older checkpoint, of ${count(cp.size)} entries`);
+      return markChecked(true, `server returned an older checkpoint (size ${count(cp.size)})`);
     }
     if (cp.size === old.size && !sameTree) {
-      return reportInconsistency(s, `The log now presents a different tree of the same ${count(cp.size)} entries: root ${b64Encode(cp.hash)}, where it was ${b64Encode(old.hash)}.`);
+      return reportInconsistency(s, `The log now serves a different Merkle root for size ${count(cp.size)}: ${b64Encode(cp.hash)} instead of ${b64Encode(old.hash)}.`);
     }
     if (sameTree) {
       // The same tree, witnessed again.
@@ -608,12 +623,12 @@ async function refresh(): Promise<void> {
     const growth = await extendLeafHashes(s.client, s.leafHashes, old.size, cp.size);
     if (!live()) return;
     if (growth.kind === "rewritten") {
-      return reportInconsistency(s, `The log now serves a different hash for entry ${count(growth.index)}, which it had already published.`);
+      return reportInconsistency(s, `The log now serves a different leaf hash for entry ${count(growth.index)}, which it had already published.`);
     }
     const { root, interior: expected } = await s.workers.tree(growth.leafHashes, cp.size);
     if (!live()) return;
     if (!bytesEqual(root, cp.hash)) {
-      return reportInconsistency(s, `The log's new tree of ${count(cp.size)} entries does not extend the ${count(old.size)} verified before: with those kept, the root is ${b64Encode(root)}, but the new checkpoint says ${b64Encode(cp.hash)}.`);
+      return reportInconsistency(s, `The new tree of size ${count(cp.size)} does not extend the earlier ${count(old.size)}-entry tree: keeping earlier leaf hashes gives Merkle root ${b64Encode(root)}, but the new checkpoint says ${b64Encode(cp.hash)}.`);
     }
     const interior = await verifyInteriorTiles(s.client, growth.leafHashes, cp.size, expected);
     if (!live()) return;
@@ -654,12 +669,13 @@ function updateEntriesStep(s: LogState): void {
   const f = s.failures;
   if (s.size === 0) return setStep("step-entries", "ok", "The log is empty.");
   const progress = `${count(s.loaded)} of ${count(s.size)}`;
-  if (f.leaf + f.parse + f.contentHash + f.signature > 0) {
+  if (f.leaf + f.parse + f.contentHash + f.signature + f.unchecked > 0) {
     const parts = [
       f.leaf && `${f.leaf} not matching the log's leaf hash`,
       f.parse && `${f.parse} unparseable`,
-      f.contentHash && `${f.contentHash} content hash mismatches`,
-      f.signature && `${f.signature} bad signatures`,
+      f.contentHash && `${f.contentHash} with mismatched content hash`,
+      f.signature && `${f.signature} with invalid signature`,
+      f.unchecked && `${f.unchecked} with a check that could not be made`,
     ].filter(Boolean);
     return setStep("step-entries", "fail", `${progress} checked: ${parts.join(", ")}.`);
   }
@@ -678,7 +694,7 @@ const SIGNATURE_BADGE: Record<SignatureResult["status"], [string, string]> = {
 };
 
 function quorumTree(n: QuorumNode): HTMLElement {
-  const label = n.kind === "group" ? `${n.name} — ${n.count} of ${n.children.length}, needs ${n.threshold}` : n.name;
+  const label = n.kind === "group" ? `${n.name} — ${n.count} of ${n.children.length}, ${n.threshold} required` : n.name;
   return h("li", null,
     h("span", { class: n.satisfied ? "sat" : "unsat" }, n.satisfied ? "✓ " : "○ "), label,
     n.kind === "group" ? h("ul", null, ...n.children.map(quorumTree)) : null);
@@ -701,7 +717,7 @@ function renderCheckpoint(s: LogState, result: CheckpointResult): void {
     kv([
       ["Origin", mono(cp.origin)],
       ["Tree size", count(cp.size)],
-      ["Root hash", mono(b64Encode(cp.hash))],
+      ["Merkle root", mono(b64Encode(cp.hash))],
       ["Source", link(s.client.url("checkpoint"))],
     ]),
     h("section", null, h("h3", null, "Signatures"),
@@ -711,13 +727,13 @@ function renderCheckpoint(s: LogState, result: CheckpointResult): void {
         h("tbody", null, ...rows)))),
     h("section", null, h("h3", null, "Quorum rule"),
       result.quorum.kind === "none"
-        ? h("p", null, "The policy requires no cosignatures.")
+        ? h("p", null, "The trust policy requires no cosignatures.")
         : h("ul", { class: "tree" }, quorumTree(result.quorum))),
     h("section", null, h("h3", null, "Checkpoint body"),
       // Exactly the text the signatures were checked over.
       h("pre", null, result.text),
       result.extensionsAuthenticated ? null : h("p", { class: "caveat" },
-        "The lines after the root hash are not covered by any log signature this browser verified, " +
+        "The lines after the Merkle root are not covered by any log signature this browser verified, " +
         "so whoever relayed the checkpoint could have changed them.")),
   );
 }
@@ -879,10 +895,10 @@ function detailSections(s: LogState, e: Entry): HTMLElement[] {
       ? "The recorded SHA-256 does not match the statement."
       : "No SHA-256 of the statement could be checked: the entry records none, or could not be decoded.";
   const signatureText = e.checks.signature === true
-    ? "The ECDSA P-256 signature over the statement verifies under the key below. Whether that key is one to trust is not checked: this page has no list of endorser keys."
+    ? "The ECDSA P-256 signature over the statement verifies under the key below. This page has no list of endorser keys, so it does not check whether that key is trusted."
     : e.checks.signature === false
       ? e.keyError
-        ? `The signing key could not be read (${e.keyError}), so the signature verifies under nothing.`
+        ? `The signing key could not be read (${e.keyError}), so the signature cannot verify.`
         : "The signature over the statement does not verify under the key below."
       : e.keyPem
         ? "The signature could not be checked: the key is not ECDSA P-256."
@@ -894,7 +910,7 @@ function detailSections(s: LogState, e: Entry): HTMLElement[] {
   const sections = [
     h("section", null, h("h3", null, "Verification"), h("ul", { class: "checks" },
       check(e.inLog, e.inLog
-        ? `Leaf ${e.index} of the tree whose root the log signed and the witnesses cosigned.`
+        ? `This entry matches leaf ${e.index} of the tree whose Merkle root the log signed${policy.quorum === "none" ? "" : " and the witnesses cosigned"}.`
         : "This entry does not match the leaf hash the log committed to."),
       check(e.checks.contentHash, contentHashText),
       check(e.checks.signature, signatureText),
@@ -942,7 +958,8 @@ function detailSections(s: LogState, e: Entry): HTMLElement[] {
     // Everything needed to re-check the entry by hand: its leaf hash is
     // SHA-256 of a zero byte followed by exactly this text.
     sections.push(h("details", { class: "raw" },
-      h("summary", null, "Log entry as recorded"), h("pre", { class: "wrap" }, e.recordText)));
+      // An entry that fails its leaf hash is what was served, not what was logged.
+      h("summary", null, e.inLog ? "Log entry as recorded" : "Entry as served (does not match its leaf hash)"), h("pre", { class: "wrap" }, e.recordText)));
   }
   return sections;
 }
@@ -961,14 +978,14 @@ function renderDebug(fault: Fault | null): void {
   if (fault) {
     banner.replaceChildren(
       h("strong", null, `Simulated failure: ${fault.title}. `),
-      `${fault.description} The data is altered inside this page after it is fetched; the log itself is unaffected. `,
+      `${fault.description} The failure is simulated inside this browser; the log itself is unaffected. `,
       h("a", { href: href({ ...ui, fault: null, entry: null }) }, "Stop simulating"));
   }
   const item = (id: string | null, title: string, description: string) => h("li", null,
     h("a", { href: href({ ...logRoute(ui.origin), fault: id }), ...(id === ui.fault ? { "aria-current": "true" } : {}) }, title),
     ` — ${description}`);
   $("debug-list").replaceChildren(
-    item(null, "None", "Show the log as it is."),
+    item(null, "None", "Shows the log as served, without alterations."),
     ...FAULTS.map((f) => item(f.id, f.title, f.description)));
 }
 

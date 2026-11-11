@@ -104,11 +104,11 @@ for (const fault of FAULTS) {
 viewerTest("the simulated failures say what went wrong", async (v) => {
   await v.goto("#log=test.example/log/0&fault=no-ml-dsa");
   const s = await v.steps();
-  assert.match(s.log.text, /Signed by the log \(Ed25519\); ML-DSA-44 not supported by this browser/);
-  assert.match(s.quorum.text, /2 valid cosignatures.*1 could not be checked in this browser/);
+  assert.match(s.log.text, /Signed by the log \(Ed25519\); this browser cannot verify ML-DSA-44/);
+  assert.match(s.quorum.text, /2 valid cosignatures.*1 could not be verified by this browser/);
 
   await v.goto("#log=test.example/log/0&fault=stale-checkpoint");
-  assert.match((await v.steps()).quorum.text, /Witnessed 3 days ago, which is more than a day/);
+  assert.match((await v.steps()).quorum.text, /Witnessed 3 days ago\. More than 24 hours old/);
 
   await v.goto("#log=test.example/log/0&fault=entry-signature");
   await v.page.locator("#rows .row a").first().click();
@@ -192,9 +192,9 @@ viewerTest("an entry's drawer shows its checks, its statement and the entry as r
   await v.goto("#log=test.example/log/0&entry=123");
   await v.drawer(true);
   const body = await v.text("#detail-body");
-  assert.match(body, /Leaf 123 of the tree whose root the log signed and the witnesses cosigned/);
+  assert.match(body, /matches leaf 123 of the tree whose Merkle root the log signed and the witnesses cosigned/);
   assert.match(body, /The recorded SHA-256 matches the statement/);
-  assert.match(body, /verifies under the key below\. Whether that key is one to trust is not checked/);
+  assert.match(body, /verifies under the key below\. This page has no list of endorser keys, so it does not check whether that key is trusted/);
   assert.match(body, /workload-3/);
   assert.match(body, /"predicateType": "https:\/\/project-oak\.github\.io\/oak\/tr\/endorsement\/v1"/);
   assert.match(body, /-----BEGIN PUBLIC KEY-----/);
@@ -249,7 +249,7 @@ viewerTest("a log that rewrites a published entry is reported and no longer foll
   await v.serve(w.main);
   await nextCheck(v);
   assert.equal(await v.outcome(), "ok ok fail ok");
-  assert.match(await v.text("#notice"), /now serves a different hash for entry 280, which it had already published/);
+  assert.match(await v.text("#notice"), /now serves a different leaf hash for entry 280, which it had already published/);
   assert.equal(await v.text("#checked"), "Stopped following");
   assert.equal(await v.text("#count"), "300 entries");
 });
@@ -264,7 +264,7 @@ viewerTest("a new tree that does not extend the old one is reported", async (v, 
   await v.serve(w.main);
   await nextCheck(v);
   assert.equal(await v.outcome(), "ok ok fail ok");
-  assert.match(await v.text("#notice"), /new tree of 305 entries does not extend the 300 verified before/);
+  assert.match(await v.text("#notice"), /new tree of size 305 does not extend the earlier 300-entry tree/);
 });
 
 viewerTest("a different tree of the same size is reported", async (v, w) => {
@@ -273,7 +273,7 @@ viewerTest("a different tree of the same size is reported", async (v, w) => {
   await w.main.rewrite(299);
   await v.serve(w.main);
   await nextCheck(v);
-  assert.match(await v.text("#notice"), /a different tree of the same 300 entries/);
+  assert.match(await v.text("#notice"), /a different Merkle root for size 300/);
   assert.equal(await v.text("#checked"), "Stopped following");
 });
 
@@ -283,7 +283,7 @@ viewerTest("an older checkpoint of the same tree is noted and otherwise ignored"
   await v.serve(w.main.fork(280));
   await nextCheck(v);
   assert.equal(await v.outcome(), "ok ok ok ok");
-  assert.match(await v.text("#checked"), /was served an older checkpoint, of 280 entries/);
+  assert.match(await v.text("#checked"), /server returned an older checkpoint \(size 280\)/);
   assert.equal(await v.text("#count"), "300 entries");
 });
 
@@ -302,7 +302,7 @@ viewerTest("a checkpoint not witnessed for a day draws a warning", async (v, w) 
   await v.serve(w.main, { age: 2 * 86400 });
   await v.goto();
   assert.equal(await v.outcome(), "ok warn ok ok");
-  assert.match((await v.steps()).quorum.text, /Witnessed 2 days ago, which is more than a day/);
+  assert.match((await v.steps()).quorum.text, /Witnessed 2 days ago\. More than 24 hours old/);
 });
 
 viewerTest("nothing spills off a phone screen", async (v) => {
@@ -330,4 +330,12 @@ viewerTest("opening the drawer does not move the page behind it", async (v) => {
   assert.equal(await left(), before);
   // And the page behind does not scroll while the drawer is open.
   assert.equal(await v.page.evaluate(() => getComputedStyle(document.documentElement).overflowY), "hidden");
+});
+
+viewerTest("an entry served altered is labelled as served, not as recorded", async (v) => {
+  await v.goto("#log=test.example/log/0&fault=entry-swapped");
+  assert.match((await v.steps()).entries.text, /2 not matching the log's leaf hash/);
+  await v.page.locator("#rows .row a").first().click();
+  await v.drawer(true);
+  assert.match(await v.text("#detail-body details.raw > summary"), /Entry as served \(does not match its leaf hash\)/i);
 });
