@@ -307,7 +307,8 @@ viewerTest("a checkpoint not witnessed for a day draws a warning", async (v, w) 
 
 viewerTest("nothing spills off a phone screen", async (v) => {
   await v.goto("#log=test.example/log/0&checkpoint=1");
-  const overflow = () => v.page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+  // How far the content is wider than the space it has, scrollbar excluded.
+  const overflow = () => v.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   assert.equal(await overflow(), 0);
   // The header row has exactly as many visible cells as each row beneath it.
   const cells = (selector: string) => v.page.locator(selector).first().evaluate((row) =>
@@ -317,3 +318,16 @@ viewerTest("nothing spills off a phone screen", async (v) => {
   await v.drawer(true);
   assert.equal(await overflow(), 0);
 }, { width: 390, height: 844 });
+
+viewerTest("opening the drawer does not move the page behind it", async (v) => {
+  await v.goto();
+  const left = () => v.page.locator("h1").evaluate((el) => el.getBoundingClientRect().left);
+  // The page is long enough to scroll, so the window has a scrollbar.
+  assert.ok(await v.page.evaluate(() => document.documentElement.scrollHeight > window.innerHeight));
+  const before = await left();
+  await v.page.locator("#rows .row a").first().click();
+  await v.drawer(true);
+  assert.equal(await left(), before);
+  // And the page behind does not scroll while the drawer is open.
+  assert.equal(await v.page.evaluate(() => getComputedStyle(document.documentElement).overflowY), "hidden");
+});
