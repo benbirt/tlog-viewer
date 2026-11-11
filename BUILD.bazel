@@ -32,12 +32,14 @@ ts_project(
     name = "node",
     srcs = glob([
         "tests/*.ts",
+        "tests/e2e/*.ts",
         "tools/*.ts",
     ]),
     declaration = True,
     tsconfig = ":tsconfig_node",
     deps = [
         ":node_modules/@types/node",
+        ":node_modules/playwright-core",
         ":web",
     ],
 )
@@ -106,3 +108,20 @@ js_binary(
     )
     for t in glob(["tests/*.test.ts"])
 ]
+
+# The built site in a real browser, against logs made up for the purpose
+# (tests/e2e/testlog.ts). Needs Chrome on the machine: see chromePath() in
+# tests/e2e/harness.ts. Nothing is fetched from the network.
+js_test(
+    name = "e2e_test",
+    size = "medium",
+    data = NODE_RUNTIME + [
+        ":node_modules/playwright-core",
+        ":site",
+    ],
+    entry_point = "tests/e2e/viewer.e2e.js",
+    # Chrome expects a home directory it can write to.
+    env = {
+        "HOME": "/tmp",
+    },
+)

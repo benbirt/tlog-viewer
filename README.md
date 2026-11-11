@@ -43,7 +43,7 @@ elsewhere needs a change there and in the `connect-src` of `web/index.html`.
 
 ## Working on it
 
-    bazel test //...          # type-check, then test under Node's WebCrypto
+    bazel test //...          # type-check, unit tests, and the browser tests
     bazel run //:serve        # http://127.0.0.1:8080/
     bazel build //:site       # static site in bazel-bin/site
 
@@ -54,6 +54,11 @@ change them with pnpm through Bazel (see `MODULE.bazel`).
 - `web/js/policy.ts`, `note.ts`, `merkle.ts`, `tiles.ts`, `interior.ts`,
   `grow.ts`, `entry.ts` — the verifier, with no DOM dependencies.
 - `web/js/app.ts` — the UI.
+- `tests/e2e/` — the built site driven in a real browser (Playwright, with the
+  Chrome already on the machine; set `CHROME_BIN` if it is not found). The logs
+  it runs against are made up on each run, with their own keys, witnesses and
+  policy, so they can grow, fork and misbehave on demand. Nothing is fetched
+  from the network.
 - `tests/testdata/` — a real checkpoint, tiles and entries captured from
   `paic.google.com/log/0`, with the policy as it stood then, so the tests keep
   passing when the pinned policy changes.
