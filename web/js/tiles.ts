@@ -61,8 +61,11 @@ export type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
 export class LogClient {
   readonly #fetch: Fetch;
 
-  /** @param base URL prefix ending in "/". */
-  constructor(readonly base: string, fetchFn: Fetch = (url, init) => fetch(url, init)) {
+  /**
+   * @param base URL prefix ending in "/".
+   * @param signal Aborts every request the client has in flight or makes later.
+   */
+  constructor(readonly base: string, fetchFn: Fetch = (url, init) => fetch(url, init), readonly signal?: AbortSignal) {
     this.#fetch = fetchFn;
   }
 
@@ -72,7 +75,7 @@ export class LogClient {
 
   async #get(path: string, init?: RequestInit): Promise<Response> {
     const url = this.url(path);
-    const res = await this.#fetch(url, init);
+    const res = await this.#fetch(url, { ...init, signal: this.signal ?? null });
     if (!res.ok) throw new HttpError(url, res.status);
     return res;
   }

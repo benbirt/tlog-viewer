@@ -141,3 +141,67 @@ test("DER signature conversion", () => {
   assert.equal(hex(derSignatureToRaw(der, 2)), "00810102");
   assert.throws(() => derSignatureToRaw(der.subarray(0, 9), 2));
 });
+
+test("only strict DER signatures are accepted", () => {
+  const seq = (...ints: number[][]) => {
+    const body = ints.flatMap((i) => [0x02, i.length, ...i]);
+    return Uint8Array.from([0x30, body.length, ...body]);
+  };
+  assert.equal(hex(derSignatureToRaw(seq([0x7f], [0x00, 0x80]), 2)), "007f0080");
+  assert.throws(() => derSignatureToRaw(seq([0x80], [0x01]), 2), /negative/);
+  assert.throws(() => derSignatureToRaw(seq([0x00, 0x01], [0x01]), 2), /not minimal/);
+  assert.throws(() => derSignatureToRaw(seq([0x00, 0x00, 0x81], [0x01]), 2), /not minimal/);
+  assert.throws(() => derSignatureToRaw(seq([], [0x01]), 2), /truncated/);
+  assert.throws(() => derSignatureToRaw(seq([0x01, 0x02, 0x03], [0x01]), 2), /too large/);
+  // A long-form length where the short form would do.
+  assert.throws(() => derSignatureToRaw(Uint8Array.from([0x30, 0x81, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01]), 2), /short form/);
+});
+
+/** The first real entry, with its JSON edited. */
+function editedEntry(edit: (record: any) => void): Bytes {
+  const record = JSON.parse(Buffer.from(parseBundle(bundle)[0]!).toString());
+  edit(record);
+  return bytes(JSON.stringify(record));
+}
+
+test("each part of an entry is checked and reported on its own", async () => {
+  // A changed signature fails the signature check and nothing else.
+  const badSig = await decodeEntry(editedEntry((r) => {
+    const sig = Buffer.from(r.spec.signature.content, "base64");
+    sig[sig.length - 1]! ^= 1;
+    r.spec.signature.content = sig.toString("base64");
+  }));
+  assert.deepEqual(badSig.checks, { contentHash: true, signature: false });
+  assert.equal(badSig.error, null);
+
+  // An unreadable key fails the signature check but does not hide the statement.
+  const badKey = await decodeEntry(editedEntry((r) => { r.spec.signature.publicKey.content = "bm90IGEga2V5"; }));
+  assert.deepEqual(badKey.checks, { contentHash: true, signature: false });
+  assert.match(badKey.keyError ?? "", /not a PEM public key/);
+  assert.equal(badKey.summary?.subjectName, "mpm_d62bab1c86");
+
+  // With no recorded digest the hash check is "not made", never "passed".
+  const noHash = await decodeEntry(editedEntry((r) => { delete r.spec.data.hash; }));
+  assert.deepEqual(noHash.checks, { contentHash: null, signature: true });
+
+  // A key in PEM with CRLF line endings is still a key.
+  const crlf = await decodeEntry(editedEntry((r) => {
+    const pem = Buffer.from(r.spec.signature.publicKey.content, "base64").toString().replaceAll("\n", "\r\n");
+    r.spec.signature.publicKey.content = Buffer.from(pem).toString("base64");
+  }));
+  assert.deepEqual(crlf.checks, { contentHash: true, signature: true });
+
+  // The entry as logged is kept for display.
+  assert.equal((await decodeEntry(parseBundle(bundle)[0]!)).recordText, Buffer.from(parseBundle(bundle)[0]!).toString());
+});
+
+test("a log client's requests can be cancelled", async () => {
+  const abort = new AbortController();
+  let seen: AbortSignal | null | undefined;
+  const client = new LogClient("https://log.example/", async (_url, init) => {
+    seen = init?.signal;
+    return new Response("x");
+  }, abort.signal);
+  await client.checkpoint();
+  assert.equal(seen, abort.signal);
+});

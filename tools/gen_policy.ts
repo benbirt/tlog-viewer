@@ -1,14 +1,37 @@
 // Usage: gen_policy <policy file> <MODULE.bazel>
 // Writes a JS module embedding the policy to stdout (see policy_data.d.ts).
+//
+// The policy is updated and deployed without review, so everything the
+// viewer will need from it is checked here, at build time: a policy that
+// would fail in every reader's browser fails the build instead.
 import { readFileSync } from "node:fs";
-import { logOrigins, parsePolicy } from "../web/js/policy.js";
+import { newVerifier } from "../web/js/note.js";
+import { evaluateQuorum, logOrigins, parsePolicy } from "../web/js/policy.js";
 
 const [policyPath, modulePath] = process.argv.slice(2);
 if (!policyPath || !modulePath) throw new Error("usage: gen_policy <policy file> <MODULE.bazel>");
 const text = readFileSync(policyPath, "utf8");
 
-// Refuse to build a viewer whose own parser cannot read its policy.
-if (logOrigins(parsePolicy(text)).length === 0) throw new Error("policy trusts no logs");
+const policy = parsePolicy(text);
+if (logOrigins(policy).length === 0) throw new Error("policy trusts no logs");
+
+// Every key must be well formed, with the key ID its name and bytes imply.
+// Node's WebCrypto stands in for the browser's: an algorithm it cannot
+// verify counts as unusable.
+const usableOrigins = new Set<string>();
+for (const log of policy.logs) {
+  if ((await newVerifier(log.vkey)).supported) usableOrigins.add(log.vkey.name);
+}
+for (const origin of logOrigins(policy)) {
+  if (!usableOrigins.has(origin)) throw new Error(`no key for ${origin} uses an algorithm the viewer can verify`);
+}
+const usableWitnesses = new Set<string>();
+for (const w of policy.witnesses) {
+  if ((await newVerifier(w.vkey)).supported) usableWitnesses.add(w.name);
+}
+if (!evaluateQuorum(policy, usableWitnesses).satisfied) {
+  throw new Error("the quorum cannot be met by witnesses whose algorithms the viewer can verify");
+}
 
 const override = /git_override\(\s*module_name = "google-tlog-witness",[^)]*\)/.exec(readFileSync(modulePath, "utf8"));
 const commit = override && /commit = "([0-9a-f]{40})"/.exec(override[0])?.[1];

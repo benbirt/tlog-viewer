@@ -56,7 +56,8 @@ h1 { font-size: 18px; font-weight: 650; letter-spacing: -0.01em; }
   .top-row { gap: 10px 12px; }
   .top-row h1 { flex: 1; }
   .tabs { order: 3; flex: 0 0 100%; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin: 0 -16px; padding: 0 16px; }
-  .tabs a { white-space: nowrap; }
+  .tabs a { white-space: nowrap; padding: 8px 10px; }
+  .btn { padding: 8px 14px; }
 }
 
 .lede { margin: 20px 0 16px; color: var(--muted); max-width: 70ch; }
@@ -101,6 +102,7 @@ table.sigs th, table.sigs td { padding: 5px 14px 5px 0; border-bottom: 1px solid
 .badge.ok { background: var(--ok-bg); color: var(--ok); }
 .badge.bad { background: var(--bad-bg); color: var(--bad); }
 .badge.warn { background: var(--warn-bg); color: var(--warn); }
+.badge.plain { background: none; box-shadow: inset 0 0 0 1px var(--line); color: var(--ink); }
 
 ul.tree, ul.tree ul { list-style: none; margin: 0; padding-left: 18px; font-size: 13px; }
 ul.tree { padding-left: 0; }
@@ -121,11 +123,17 @@ ul.tree .unsat { color: var(--muted); }
 .table { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; overflow: clip; font-size: 13px; }
 .row { display: grid; grid-template-columns: 64px 138px minmax(130px, 1.1fr) 112px minmax(120px, 1.5fr) minmax(110px, 1fr) 92px 60px; gap: 12px; align-items: center; height: 38px; padding: 0 14px; }
 .row > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.row.head { height: 34px; font-size: 12px; font-weight: 600; color: var(--muted); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 1; background: var(--surface); border-radius: 10px 10px 0 0; }
-#rows a.row { color: inherit; text-decoration: none; border-bottom: 1px solid var(--line); }
-#rows a.row:last-child { border-bottom: 0; }
-#rows a.row:hover, #rows a.row:focus-visible { background: var(--row-hover); }
-#rows a.row.pending { color: var(--muted); }
+.row.head { height: 34px; font-size: 12px; font-weight: 600; color: var(--muted); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 1; background: var(--surface); }
+#rows .row { position: relative; border-bottom: 1px solid var(--line); }
+#rows .row:last-child { border-bottom: 0; }
+#rows .row a { color: inherit; text-decoration: none; }
+/* The link in the first cell covers its whole row. */
+#rows .row a::after { content: ""; position: absolute; inset: 0; }
+#rows .row a:focus-visible { outline: none; }
+#rows .row:has(a:focus-visible) { outline: 2px solid var(--accent); outline-offset: -2px; }
+#rows .row .rest { grid-column: 2 / -1; }
+#rows .row:hover { background: var(--row-hover); }
+#rows .row.pending { color: var(--muted); }
 .row .num { font-family: var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
 #rows .c-digest, #rows .date { font-family: var(--mono); font-size: 12px; }
 .row .sub { color: var(--muted); }
@@ -151,7 +159,7 @@ ul.tree .unsat { color: var(--muted); }
 
 dialog#detail { border: 1px solid var(--line); border-radius: 12px 0 0 12px; background: var(--surface); color: var(--ink); padding: 0; margin: 0 0 0 auto; height: 100dvh; max-height: 100dvh; width: min(680px, 100vw); max-width: 100vw; }
 dialog#detail::backdrop { background: rgb(0 0 0 / 0.35); }
-.detail-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--surface); }
+.detail-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 1; background: var(--surface); }
 .detail-head h2 { font-size: 16px; }
 #detail-body { padding: 16px 18px 28px; display: grid; gap: 20px; }
 #detail-body section { min-width: 0; }
@@ -162,6 +170,15 @@ ul.checks { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; fo
 ul.checks li { display: flex; gap: 8px; align-items: baseline; }
 ul.checks li > span:last-child { overflow-wrap: anywhere; min-width: 0; }
 pre { margin: 0; padding: 10px 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; font: 12px/1.5 var(--mono); overflow-x: auto; }
+pre.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
+details.raw > summary { cursor: pointer; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; margin-bottom: 6px; }
+.caveat { margin-top: 8px; font-size: 13px; color: var(--warn); }
+/* The page behind an open drawer does not scroll with it. */
+html:has(dialog[open]) { overflow: hidden; }
+dialog#detail { overscroll-behavior: contain; }
+@media (max-width: 680px) {
+  dialog#detail { border: 0; border-radius: 0; }
+}
 
 .notice { overflow-wrap: anywhere; margin-top: 18px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--muted); }
 .notice.bad { border-color: var(--bad); color: var(--bad); }

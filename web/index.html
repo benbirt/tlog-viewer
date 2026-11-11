@@ -19,14 +19,14 @@
 </header>
 
 <main class="wrap">
-  <p class="lede">Project Oak endorsements published to the PAIC logs, verified in this browser:
-    nothing below is trusted until the checks beside it pass.</p>
+  <p class="lede">Project Oak endorsements published to the PAIC logs. Every check is run here, in this
+    browser: a tick means this page verified it, not that someone else said so.</p>
 
   <section aria-label="Verification" class="steps" id="steps">
-    <div class="step" id="step-log"><span class="mark"></span><div><h2>Log signature</h2><p>Waiting…</p></div></div>
-    <div class="step" id="step-quorum"><span class="mark"></span><div><h2>Witness quorum</h2><p>Waiting…</p></div></div>
-    <div class="step" id="step-root"><span class="mark"></span><div><h2>Merkle root</h2><p>Waiting…</p></div></div>
-    <div class="step" id="step-entries"><span class="mark"></span><div><h2>Entries</h2><p>Waiting…</p></div></div>
+    <div class="step" id="step-log"><span class="mark" aria-hidden="true"></span><div><h2>Log signature</h2><p>Waiting…</p></div></div>
+    <div class="step" id="step-quorum"><span class="mark" aria-hidden="true"></span><div><h2>Witness quorum</h2><p>Waiting…</p></div></div>
+    <div class="step" id="step-root"><span class="mark" aria-hidden="true"></span><div><h2>Merkle root</h2><p>Waiting…</p></div></div>
+    <div class="step" id="step-entries"><span class="mark" aria-hidden="true"></span><div><h2>Entries</h2><p>Waiting…</p></div></div>
   </section>
 
   <details class="panel" id="checkpoint">
@@ -39,11 +39,12 @@
   <section aria-label="Entries" id="entries" hidden>
     <div class="toolbar">
       <input id="q" type="search" placeholder="Search subject, digest, workload, version, claim, key…" aria-label="Search entries" autocomplete="off" spellcheck="false">
-      <select id="f-validity" aria-label="Validity">
-        <option value="">Any validity</option>
-        <option value="valid">Valid now</option>
+      <select id="f-validity" aria-label="Validity period">
+        <option value="">Any validity period</option>
+        <option value="current">Current</option>
         <option value="expired">Expired</option>
-        <option value="future">Not yet valid</option>
+        <option value="future">Not yet started</option>
+        <option value="unknown">Unknown dates</option>
       </select>
       <select id="f-publisher" aria-label="Publisher"><option value="">Any publisher</option></select>
       <label class="check"><input id="f-problems" type="checkbox"> Failed checks only</label>
@@ -57,7 +58,7 @@
         <span role="columnheader" class="c-digest">SHA-256</span>
         <span role="columnheader" class="c-workload">Workload</span>
         <span role="columnheader" class="c-publisher">Publisher</span>
-        <span role="columnheader">Validity</span>
+        <span role="columnheader">Period</span>
         <span role="columnheader" class="c-ok">Checks</span>
       </div>
       <div id="rows" role="rowgroup"></div>
