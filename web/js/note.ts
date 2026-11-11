@@ -77,6 +77,13 @@ export interface CheckpointResult {
    */
   quorumPossible: boolean;
   /**
+   * When the quorum was reached, in Unix seconds: the latest time such that
+   * the cosignatures made at or after it are enough on their own. This is how
+   * recently the witnesses, as a quorum, saw the log in this state. Null if
+   * the quorum is not met or needs no cosignatures.
+   */
+  witnessedAt: bigint | null;
+  /**
    * False if the checkpoint has extension lines that no valid log signature
    * covers, so anyone relaying the checkpoint could have altered them.
    */
@@ -139,9 +146,14 @@ async function importKey(format: "raw" | "spki", data: Bytes, name: string): Pro
 
 const cosignatureTime = (sig: Bytes): bigint | null => (sig.length >= 8 ? view(sig).getBigUint64(0) : null);
 
-/** Builds a verifier for a vkey, checking that its key ID is the right one. */
-export async function newVerifier(vkey: VKey): Promise<Verifier> {
+/**
+ * Builds a verifier for a vkey, checking that its key ID is the right one.
+ * Algorithms in `disabledAlgs` are treated as if this platform lacked them,
+ * to show how the viewer behaves in a browser that does.
+ */
+export async function newVerifier(vkey: VKey, disabledAlgs?: ReadonlySet<number>): Promise<Verifier> {
   const { name, keyId, alg, key } = vkey;
+  const disabled = disabledAlgs?.has(alg) ?? false;
   const id = await sha256(concat(utf8Encode(name + "\n"), Uint8Array.of(alg), key));
   if (view(id).getUint32(0) !== keyId) throw new Error(`key id mismatch for ${name}`);
   const base = { name, keyId, algName: ALG_NAMES[alg] ?? `type 0x${alg.toString(16)}` };
@@ -149,7 +161,7 @@ export async function newVerifier(vkey: VKey): Promise<Verifier> {
   switch (alg) {
     case ALG_ED25519: {
       if (key.length !== 32) throw new Error(`bad Ed25519 key for ${name}`);
-      const k = await importKey("raw", key, "Ed25519");
+      const k = disabled ? null : await importKey("raw", key, "Ed25519");
       return {
         ...base,
         supported: k !== null,
@@ -165,7 +177,7 @@ export async function newVerifier(vkey: VKey): Promise<Verifier> {
     }
     case ALG_ED25519_COSIG: {
       if (key.length !== 32) throw new Error(`bad Ed25519 key for ${name}`);
-      const k = await importKey("raw", key, "Ed25519");
+      const k = disabled ? null : await importKey("raw", key, "Ed25519");
       return {
         ...base,
         supported: k !== null,
@@ -183,7 +195,7 @@ export async function newVerifier(vkey: VKey): Promise<Verifier> {
     }
     case ALG_MLDSA44: {
       if (key.length !== MLDSA44_PUBLIC_KEY_SIZE) throw new Error(`bad ML-DSA-44 key for ${name}`);
-      const k = await importKey("spki", concat(MLDSA44_SPKI_PREFIX, key), "ML-DSA-44");
+      const k = disabled ? null : await importKey("spki", concat(MLDSA44_SPKI_PREFIX, key), "ML-DSA-44");
       const nameBytes = utf8Encode(name);
       return {
         ...base,
@@ -214,6 +226,18 @@ export async function newVerifier(vkey: VKey): Promise<Verifier> {
   }
 }
 
+/** The latest time T such that the cosignatures made at or after T meet the quorum. */
+function quorumTime(policy: Policy, cosignedAt: ReadonlyMap<string, bigint>): bigint | null {
+  if (policy.quorum === "none") return null;
+  const newestFirst = [...cosignedAt].sort(([, a], [, b]) => (a > b ? -1 : a < b ? 1 : 0));
+  const names = new Set<string>();
+  for (const [name, time] of newestFirst) {
+    names.add(name);
+    if (evaluateQuorum(policy, names).satisfied) return time;
+  }
+  return null;
+}
+
 /**
  * Applies a policy's checkpoint validity rule to a raw signed checkpoint: it
  * must be signed by one of the policy's logs whose key name is the origin,
@@ -226,7 +250,14 @@ export async function newVerifier(vkey: VKey): Promise<Verifier> {
  * quorum exists to tolerate a faulty witness. Such signatures are reported in
  * `warnings`.
  */
-export async function verifyCheckpoint(policy: Policy, raw: string, expectedOrigin?: string): Promise<CheckpointResult> {
+export interface VerifyOptions {
+  expectedOrigin?: string;
+  /** See newVerifier. */
+  disabledAlgs?: ReadonlySet<number>;
+}
+
+export async function verifyCheckpoint(policy: Policy, raw: string, options: VerifyOptions = {}): Promise<CheckpointResult> {
+  const { expectedOrigin, disabledAlgs } = options;
   const note = parseNote(raw);
   const checkpoint = parseCheckpoint(note.text);
 
@@ -248,6 +279,7 @@ export async function verifyCheckpoint(policy: Policy, raw: string, expectedOrig
   const signatures: SignatureResult[] = [];
   const seen = new Set<string>();
   const validWitnesses = new Set<string>();
+  const cosignedAt = new Map<string, bigint>();
   const uncheckedWitnesses = new Set<string>();
   const problems: string[] = [];
   const warnings: string[] = [];
@@ -270,7 +302,7 @@ export async function verifyCheckpoint(policy: Policy, raw: string, expectedOrig
     }
     seen.add(id);
     if (!k) continue;
-    const v = await newVerifier(k.vkey);
+    const v = await newVerifier(k.vkey, disabledAlgs);
     row.algName = v.algName;
     row.status = await v.verify(note.text, checkpoint, s.sig);
     if (row.status === "invalid") warnings.push(`invalid signature from ${s.name} (${v.algName})`);
@@ -282,6 +314,7 @@ export async function verifyCheckpoint(policy: Policy, raw: string, expectedOrig
       textSigned ||= v.coversText;
     } else if (k.witness !== null) {
       validWitnesses.add(k.witness);
+      if (row.timestamp !== null) cosignedAt.set(k.witness, row.timestamp);
     }
   }
 
@@ -302,6 +335,7 @@ export async function verifyCheckpoint(policy: Policy, raw: string, expectedOrig
     logSigned,
     quorum,
     quorumPossible: evaluateQuorum(policy, new Set([...validWitnesses, ...uncheckedWitnesses])).satisfied,
+    witnessedAt: quorum.satisfied ? quorumTime(policy, cosignedAt) : null,
     extensionsAuthenticated: checkpoint.extensions.length === 0 || textSigned,
     problems,
     warnings,

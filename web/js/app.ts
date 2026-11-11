@@ -4,6 +4,7 @@
 import { b64Encode, type Bytes, bytesEqual, hex } from "./bytes.js";
 import { logBaseUrl } from "./config.js";
 import { type DecodedEntry, decodeEntry, type Summary } from "./entry.js";
+import { type Fault, faultById, FAULTS, faultTargets, faultyFetch } from "./faults.js";
 import { verifyInteriorTiles } from "./interior.js";
 import { leafHash, rootFromLeafHashes } from "./merkle.js";
 import { type CheckpointResult, type SignatureResult, verifyCheckpoint } from "./note.js";
@@ -12,6 +13,8 @@ import { POLICY_SOURCE, POLICY_TEXT } from "./policy_data.js";
 import { HttpError, LogClient, TILE_WIDTH, tilePath, tilesForSize } from "./tiles.js";
 
 const DEFAULT_PAGE_SIZE = 50;
+/** A checkpoint last witnessed longer ago than this draws a warning. */
+const STALE_AFTER_SECONDS = 24 * 60 * 60;
 const policy = parsePolicy(POLICY_TEXT);
 const origins = logOrigins(policy);
 
@@ -30,6 +33,8 @@ interface Entry extends DecodedEntry {
 /** Everything known about the log on screen; replaced wholesale on switching logs. */
 interface LogState {
   origin: string;
+  /** The simulated failure this load ran under, by id. */
+  fault: string | null;
   /** Cancels the requests of a load that has been superseded. */
   abort: AbortController;
   client: LogClient;
@@ -49,9 +54,6 @@ type StepId = "step-log" | "step-quorum" | "step-root" | "step-entries";
 const STEPS: StepId[] = ["step-log", "step-quorum", "step-root", "step-entries"];
 
 let state: LogState | null = null;
-
-/** The page of the filtered list on screen, counting from zero. */
-let page = 0;
 
 // ---------------------------------------------------------------------------
 // DOM helpers
@@ -104,9 +106,9 @@ function fmtUnix(s: bigint): string {
 }
 
 /** How long ago a Unix time was, in words. */
-function fmtAge(s: bigint, now = Date.now()): string {
+function fmtAge(s: bigint, at: number): string {
   if (s <= 0n || s > MAX_UNIX_SECONDS) return "at an implausible time";
-  const seconds = Math.round(now / 1000 - Number(s));
+  const seconds = Math.round(at / 1000 - Number(s));
   if (seconds < -120) return "in the future";
   if (seconds < 90) return "just now";
   const units: [number, string][] = [[86400, "day"], [3600, "hour"], [60, "minute"]];
@@ -120,21 +122,103 @@ function fmtAge(s: bigint, now = Date.now()): string {
 // ---------------------------------------------------------------------------
 // Routing
 
-function route(): { origin: string; entry: number | null } {
-  const params = new URLSearchParams(location.hash.slice(1));
-  const log = params.get("log");
-  const entry = params.get("entry");
+/**
+ * Everything about what the page is showing, all of it held in the URL
+ * fragment so that any view can be linked to, reloaded, and stepped through
+ * with the back button.
+ */
+interface Route {
+  origin: string;
+  /** The entry whose drawer is open. */
+  entry: number | null;
+  /** Search text. */
+  q: string;
+  validity: Validity | "";
+  publisher: string;
+  /** Show only entries that failed a check. */
+  problems: boolean;
+  /** Page of the filtered list, counting from zero. */
+  page: number;
+  pageSize: number;
+  /** Whether the checkpoint panel is open. */
+  checkpoint: boolean;
+  /** The simulated failure in effect, by id. */
+  fault: string | null;
+}
+
+const PAGE_SIZES = [25, 50, 100, 250];
+const VALIDITIES: readonly string[] = ["current", "expired", "future", "unknown"];
+
+function readRoute(): Route {
+  const p = new URLSearchParams(location.hash.slice(1));
+  const number = (key: string): number | null => {
+    const v = p.get(key);
+    return v !== null && /^\d{1,15}$/.test(v) ? Number(v) : null;
+  };
+  const log = p.get("log");
+  const validity = p.get("validity") ?? "";
+  const pageSize = number("per");
   return {
     origin: log !== null && origins.includes(log) ? log : origins[0] ?? "",
-    entry: entry !== null && /^\d+$/.test(entry) ? Number(entry) : null,
+    entry: number("entry"),
+    q: p.get("q") ?? "",
+    validity: VALIDITIES.includes(validity) ? (validity as Validity) : "",
+    publisher: p.get("publisher") ?? "",
+    problems: p.get("problems") === "1",
+    page: Math.max(0, (number("page") ?? 1) - 1),
+    pageSize: pageSize !== null && PAGE_SIZES.includes(pageSize) ? pageSize : DEFAULT_PAGE_SIZE,
+    checkpoint: p.get("checkpoint") === "1",
+    fault: faultById(p.get("fault"))?.id ?? null,
   };
 }
 
-function href(origin: string, entry?: number): string {
-  const p = new URLSearchParams({ log: origin });
-  if (entry !== undefined) p.set("entry", String(entry));
+/** The fragment for a route; anything at its default is left out. */
+function href(r: Route): string {
+  const p = new URLSearchParams({ log: r.origin });
+  if (r.q) p.set("q", r.q);
+  if (r.validity) p.set("validity", r.validity);
+  if (r.publisher) p.set("publisher", r.publisher);
+  if (r.problems) p.set("problems", "1");
+  if (r.page > 0) p.set("page", String(r.page + 1));
+  if (r.pageSize !== DEFAULT_PAGE_SIZE) p.set("per", String(r.pageSize));
+  if (r.checkpoint) p.set("checkpoint", "1");
+  if (r.entry !== null) p.set("entry", String(r.entry));
+  if (r.fault) p.set("fault", r.fault);
   return "#" + p.toString().replaceAll("%2F", "/");
 }
+
+/** A log's default view, keeping any simulated failure in effect. */
+const logRoute = (origin: string): Route => ({
+  origin, entry: null, q: "", validity: "", publisher: "", problems: false,
+  page: 0, pageSize: ui.pageSize, checkpoint: false, fault: ui.fault,
+});
+
+/** The route on screen. Changes to it go through navigate(). */
+let ui: Route = readRoute();
+
+/**
+ * Moves to a changed route and records it in the URL. A step worth returning
+ * to with the back button (a page, the drawer) adds a history entry; an
+ * adjustment (typing in the search box) replaces the current one.
+ */
+function navigate(change: Partial<Route>, history_: "push" | "replace"): void {
+  ui = { ...ui, ...change };
+  if (history_ === "push") history.pushState(null, "", href(ui));
+  else history.replaceState(null, "", href(ui));
+}
+
+/** Makes the controls show the route, after it changed other than through them. */
+function syncControls(): void {
+  $<HTMLInputElement>("q").value = ui.q;
+  $<HTMLSelectElement>("f-validity").value = ui.validity;
+  $<HTMLSelectElement>("f-publisher").value = ui.publisher;
+  $<HTMLInputElement>("f-problems").checked = ui.problems;
+  $<HTMLSelectElement>("page-size").value = String(ui.pageSize);
+  $<HTMLDetailsElement>("checkpoint").open = ui.checkpoint;
+}
+
+/** The time the page takes it to be: now, unless a simulated failure moves it. */
+const now = (): number => Date.now() + (faultById(ui.fault)?.clockOffsetMs ?? 0);
 
 // ---------------------------------------------------------------------------
 // Status display
@@ -161,6 +245,18 @@ async function pool<T>(items: T[], limit: number, fn: (item: T) => Promise<void>
 // ---------------------------------------------------------------------------
 // Loading and verifying a log
 
+function markCurrentLog(origin: string): void {
+  for (const a of $("logs").children) {
+    if ((a as HTMLElement).dataset.origin === origin) {
+      a.setAttribute("aria-current", "page");
+      // On narrow screens the tabs scroll sideways; keep the current one in view.
+      a.scrollIntoView({ block: "nearest", inline: "nearest" });
+    } else {
+      a.removeAttribute("aria-current");
+    }
+  }
+}
+
 /** Set while load() closes the entry drawer, so that doing so keeps the URL. */
 let closingForReload = false;
 
@@ -168,10 +264,13 @@ async function load(origin: string, attempt = 0): Promise<void> {
   // Stop whatever the previous load still has in flight.
   state?.abort.abort();
   const abort = new AbortController();
+  const fault = faultById(ui.fault);
+  const base = logBaseUrl(origin);
   const s: LogState = {
     origin,
+    fault: fault?.id ?? null,
     abort,
-    client: new LogClient(logBaseUrl(origin), undefined, abort.signal),
+    client: new LogClient(base, fault ? faultyFetch(fault, base) : undefined, abort.signal),
     size: 0,
     leafHashes: null,
     entries: [],
@@ -182,18 +281,10 @@ async function load(origin: string, attempt = 0): Promise<void> {
     done: false,
   };
   state = s;
-  page = 0;
   const live = () => state === s;
+  renderDebug(fault);
 
-  for (const a of $("logs").children) {
-    if ((a as HTMLElement).dataset.origin === origin) {
-      a.setAttribute("aria-current", "page");
-      // On narrow screens the tabs scroll sideways; keep the current one in view.
-      a.scrollIntoView({ block: "nearest", inline: "nearest" });
-    } else {
-      a.removeAttribute("aria-current");
-    }
-  }
+  markCurrentLog(origin);
   for (const id of STEPS) setStep(id, "", "Waiting…");
   $("cp-summary").textContent = "";
   $("cp-body").replaceChildren();
@@ -220,7 +311,9 @@ async function load(origin: string, attempt = 0): Promise<void> {
     setStep("step-log", "busy", "Fetching checkpoint…");
     let raw: string;
     try {
-      raw = await s.client.checkpoint();
+      // The "wrong log" simulation serves a different log's checkpoint.
+      const other = fault?.checkpointFromOtherLog ? origins.find((o) => o !== origin) : undefined;
+      raw = await (other ? new LogClient(logBaseUrl(other), undefined, abort.signal) : s.client).checkpoint();
     } catch (e) {
       if (!live()) return;
       if (e instanceof HttpError && e.status === 404) {
@@ -231,7 +324,10 @@ async function load(origin: string, attempt = 0): Promise<void> {
       }
       throw e;
     }
-    const result = await verifyCheckpoint(policy, raw, origin);
+    const result = await verifyCheckpoint(policy, raw, {
+      expectedOrigin: origin,
+      disabledAlgs: new Set(fault?.disabledAlgs),
+    });
     if (!live()) return;
     const cp = result.checkpoint;
     s.size = cp.size;
@@ -267,13 +363,15 @@ async function load(origin: string, attempt = 0): Promise<void> {
     const cosigners = witnessSigs.filter((x) => x.status === "valid");
     const invalid = witnessSigs.filter((x) => x.status === "invalid").length;
     const unchecked = witnessSigs.filter((x) => x.status === "unsupported").length;
-    const latest = cosigners.reduce<bigint | null>(
-      (max, x) => (x.timestamp !== null && (max === null || x.timestamp > max) ? x.timestamp : max), null);
+    // A checkpoint the witnesses have not seen for a day may not be the
+    // log's latest: someone serving an old one would look like this.
+    const witnessed = result.witnessedAt;
+    const stale = witnessed !== null && now() / 1000 - Number(witnessed) > STALE_AFTER_SECONDS;
     const rule = q.kind === "group" ? `${q.count} of ${q.children.length} in “${q.name}”, ${q.threshold} required` : q.name;
     const quorumBlockedByBrowser = !q.satisfied && result.quorumPossible;
-    setStep("step-quorum", !q.satisfied ? "fail" : invalid > 0 ? "warn" : "ok",
+    setStep("step-quorum", !q.satisfied ? "fail" : invalid > 0 || stale ? "warn" : "ok",
       `${cosigners.length} valid cosignature${cosigners.length === 1 ? "" : "s"}; ${rule}.` +
-      (latest !== null ? ` Last witnessed ${fmtAge(latest)}.` : "") +
+      (witnessed !== null ? ` Witnessed ${fmtAge(witnessed, now())}${stale ? ", which is more than a day: this may not be the log's latest checkpoint" : ""}.` : "") +
       (invalid > 0 ? ` ${invalid} cosignature${invalid === 1 ? " is" : "s are"} invalid.` : "") +
       (unchecked > 0 ? ` ${unchecked} could not be checked in this browser.` : "") +
       (quorumBlockedByBrowser ? " They would be enough to meet the quorum." : ""));
@@ -329,11 +427,15 @@ async function load(origin: string, attempt = 0): Promise<void> {
     await pool(tiles.toReversed(), 4, async (t) => {
       if (!live()) return;
       const bundle = await s.client.entryBundle(t);
-      const wanted = route().entry;
-      for (const [i, bytes] of bundle.entries()) {
+      const altered = fault?.entry ? faultTargets(cp.size) : [];
+      for (const [i, served] of bundle.entries()) {
         const index = t.index * TILE_WIDTH + i;
+        // A simulated failure alters an entry either as served, before it is
+        // compared with its leaf hash, or as if logged that way, after.
+        const rewrite = fault?.entry && altered.includes(index) ? fault.entry : null;
+        const bytes = rewrite && fault?.entryStage === "served" ? rewrite(served) : served;
         const lh = await leafHash(bytes);
-        const decoded = await decodeEntry(bytes);
+        const decoded = await decodeEntry(rewrite && fault?.entryStage === "logged" ? rewrite(bytes) : bytes);
         if (!live()) return;
         const inLog = bytesEqual(lh, leafHashes.subarray(index * 32, index * 32 + 32));
         const e: Entry = {
@@ -354,15 +456,15 @@ async function load(origin: string, attempt = 0): Promise<void> {
         if (publisher && !s.publishers.has(publisher)) {
           s.publishers.add(publisher);
           const select = $<HTMLSelectElement>("f-publisher");
-          const chosen = select.value;
           select.length = 1;
           select.append(...[...s.publishers].sort().map((p) => new Option(p, p)));
-          select.value = chosen;
+          // The route may name a publisher whose entries had not loaded yet.
+          select.value = ui.publisher;
         }
         s.entries[index] = e;
         s.loaded++;
         // An entry opened by link shows as soon as it arrives, not at the end.
-        if (index === wanted) openDetailFromRoute();
+        if (index === ui.entry) openDetailFromRoute();
       }
       updateEntriesStep(s);
       scheduleFilter();
@@ -476,12 +578,12 @@ function haystack(index: number, e: DecodedEntry): string {
  */
 type Validity = "current" | "expired" | "future" | "unknown";
 
-function validity(summary: Summary | null, now = Date.now()): Validity {
+function validity(summary: Summary | null, at = now()): Validity {
   const nb = Date.parse(summary?.notBefore ?? "");
   const na = Date.parse(summary?.notAfter ?? "");
   if (Number.isNaN(nb) || Number.isNaN(na)) return "unknown";
-  if (now < nb) return "future";
-  if (now > na) return "expired";
+  if (at < nb) return "future";
+  if (at > na) return "expired";
   return "current";
 }
 
@@ -499,12 +601,14 @@ function scheduleFilter(): void {
 function applyFilter(): void {
   const s = state;
   if (!s?.leafHashes) return;
-  const terms = $<HTMLInputElement>("q").value.toLowerCase().split(/\s+/).filter(Boolean);
-  const wantValidity = $<HTMLSelectElement>("f-validity").value;
-  const wantPublisher = $<HTMLSelectElement>("f-publisher").value;
-  const problemsOnly = $<HTMLInputElement>("f-problems").checked;
+  // Filters come from the route, not the controls: a publisher named in a
+  // link has no menu option to select until one of its entries has loaded.
+  const terms = ui.q.toLowerCase().split(/\s+/).filter(Boolean);
+  const wantValidity = ui.validity;
+  const wantPublisher = ui.publisher;
+  const problemsOnly = ui.problems;
   const filtering = terms.length > 0 || wantValidity !== "" || wantPublisher !== "" || problemsOnly;
-  const now = Date.now();
+  const at = now();
   const view: number[] = [];
   for (let i = s.size - 1; i >= 0; i--) {
     const e = s.entries[i];
@@ -514,7 +618,7 @@ function applyFilter(): void {
     }
     if (problemsOnly && e.ok) continue;
     if (wantPublisher && e.summary?.publisher !== wantPublisher) continue;
-    if (wantValidity && validity(e.summary, now) !== wantValidity) continue;
+    if (wantValidity && validity(e.summary, at) !== wantValidity) continue;
     if (!terms.every((t) => e.haystack.includes(t))) continue;
     view.push(i);
   }
@@ -531,7 +635,7 @@ function rowFor(s: LogState, index: number): HTMLElement {
   const cell = (cls: string, ...c: Child[]) => h("span", { class: cls, role: "cell" }, ...c);
   // The link sits in the first cell and is stretched over the row in CSS, so
   // the whole row is clickable while remaining a link to assistive technology.
-  const open = cell("num", h("a", { href: href(s.origin, index), "aria-label": `Entry ${index}` }, String(index)));
+  const open = cell("num", h("a", { href: href({ ...ui, entry: index }), "aria-label": `Entry ${index}` }, String(index)));
   if (!e) {
     row.classList.add("pending");
     row.append(open, cell("rest", "Loading…"));
@@ -551,18 +655,18 @@ function rowFor(s: LogState, index: number): HTMLElement {
   return row;
 }
 
-function pageSize(): number {
-  return Number($<HTMLSelectElement>("page-size").value) || DEFAULT_PAGE_SIZE;
-}
+const pageCount = (s: LogState): number => Math.max(1, Math.ceil(s.view.length / ui.pageSize));
 
 /** Renders the current page of the filtered list. */
 function renderRows(): void {
   const s = state;
   const rows = $("rows");
   if (!s?.leafHashes) return;
-  const size = pageSize();
-  const pages = Math.max(1, Math.ceil(s.view.length / size));
-  page = Math.max(0, Math.min(page, pages - 1));
+  const size = ui.pageSize;
+  const pages = pageCount(s);
+  // While a filtered log is still loading it may not yet reach the page the
+  // route names. Show the last page there is, without rewriting the route.
+  const page = Math.min(ui.page, pages - 1);
   const start = page * size;
   const indices = s.view.slice(start, start + size);
 
@@ -586,7 +690,8 @@ function renderRows(): void {
 }
 
 function goToPage(target: number): void {
-  page = target;
+  if (!state) return;
+  navigate({ page: Math.max(0, Math.min(target, pageCount(state) - 1)) }, "push");
   renderRows();
   // Bring the top of the new page into view if it has scrolled off.
   if ($("entries").getBoundingClientRect().top < 0) $("entries").scrollIntoView();
@@ -597,7 +702,7 @@ function goToPage(target: number): void {
 
 function openDetailFromRoute(): void {
   const s = state;
-  const { entry } = route();
+  const { entry } = ui;
   const dialog = $<HTMLDialogElement>("detail");
   if (entry === null || !s?.leafHashes || entry >= s.size) {
     if (dialog.open) dialog.close();
@@ -689,27 +794,67 @@ function detailSections(s: LogState, e: Entry): HTMLElement[] {
 // ---------------------------------------------------------------------------
 // Wiring
 
+/**
+ * Shows which failure is being simulated, if any, and the menu for choosing
+ * one. A simulation is always announced at the top of the page: a link that
+ * turns one on must not be able to pass a faked failure off as a real one.
+ */
+function renderDebug(fault: Fault | null): void {
+  const banner = $("debug-banner");
+  banner.hidden = fault === null;
+  if (fault) {
+    banner.replaceChildren(
+      h("strong", null, `Simulated failure: ${fault.title}. `),
+      `${fault.description} The data is altered inside this page after it is fetched; the log itself is unaffected. `,
+      h("a", { href: href({ ...ui, fault: null, entry: null }) }, "Stop simulating"));
+  }
+  const item = (id: string | null, title: string, description: string) => h("li", null,
+    h("a", { href: href({ ...logRoute(ui.origin), fault: id }), ...(id === ui.fault ? { "aria-current": "true" } : {}) }, title),
+    ` — ${description}`);
+  $("debug-list").replaceChildren(
+    item(null, "None", "Show the log as it is."),
+    ...FAULTS.map((f) => item(f.id, f.title, f.description)));
+}
+
 function init(): void {
-  $("logs").replaceChildren(...origins.map((o) => h("a", { href: href(o), "data-origin": o }, o)));
   $("policy-source").replaceChildren(
     mono(POLICY_SOURCE.target), " from ",
     link(`${POLICY_SOURCE.repo}/tree/${POLICY_SOURCE.commit}`, `google-tlog-witness@${POLICY_SOURCE.commit.slice(0, 7)}`));
 
-  for (const id of ["q", "f-validity", "f-publisher", "f-problems"]) {
-    $(id).addEventListener("input", () => {
-      page = 0;
-      applyFilter();
-    });
-  }
-  $("page-size").addEventListener("input", () => {
-    page = 0;
-    renderRows();
-  });
+  // Each control writes its value to the route; filtering then reads the route.
+  const onFilter = (change: () => Partial<Route>) => () => {
+    navigate({ ...change(), page: 0 }, "replace");
+    applyFilter();
+  };
+  $("q").addEventListener("input", onFilter(() => ({ q: $<HTMLInputElement>("q").value })));
+  $("f-validity").addEventListener("input", onFilter(() => ({ validity: $<HTMLSelectElement>("f-validity").value as Route["validity"] })));
+  $("f-publisher").addEventListener("input", onFilter(() => ({ publisher: $<HTMLSelectElement>("f-publisher").value })));
+  $("f-problems").addEventListener("input", onFilter(() => ({ problems: $<HTMLInputElement>("f-problems").checked })));
+  $("page-size").addEventListener("input", onFilter(() => ({ pageSize: Number($<HTMLSelectElement>("page-size").value) })));
   $("page-first").addEventListener("click", () => goToPage(0));
-  $("page-prev").addEventListener("click", () => goToPage(page - 1));
-  $("page-next").addEventListener("click", () => goToPage(page + 1));
+  $("page-prev").addEventListener("click", () => goToPage(ui.page - 1));
+  $("page-next").addEventListener("click", () => goToPage(ui.page + 1));
   $("page-last").addEventListener("click", () => goToPage(Infinity));
-  $("refresh").addEventListener("click", () => void load(route().origin));
+  $("refresh").addEventListener("click", () => void load(ui.origin));
+
+  const checkpoint = $<HTMLDetailsElement>("checkpoint");
+  checkpoint.addEventListener("toggle", () => {
+    if (checkpoint.open === ui.checkpoint) return;
+    navigate({ checkpoint: checkpoint.open }, "replace");
+    renderRows(); // the rows' links carry the whole route
+  });
+
+  // Opening an entry goes through the route like every other control. The
+  // rows are still real links, for opening in a new tab or copying.
+  $("rows").addEventListener("click", (ev) => {
+    const a = (ev.target as Element).closest("a");
+    if (!a || ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
+    const entry = new URLSearchParams(a.hash.slice(1)).get("entry");
+    if (entry === null) return;
+    ev.preventDefault();
+    navigate({ entry: Number(entry) }, "push");
+    openDetailFromRoute();
+  });
 
   const dialog = $<HTMLDialogElement>("detail");
   dialog.addEventListener("close", () => {
@@ -718,14 +863,23 @@ function init(): void {
       closingForReload = false;
       return;
     }
-    if (state && route().entry !== null) history.pushState(null, "", href(state.origin));
+    if (ui.entry !== null) navigate({ entry: null }, "push");
   });
   dialog.addEventListener("click", (ev) => { if (ev.target === dialog) dialog.close(); });
 
+  // The URL changed other than through a control: a link was followed, or
+  // the back button pressed.
   const onRoute = () => {
-    const { origin } = route();
-    if (state?.origin !== origin) void load(origin);
-    else openDetailFromRoute();
+    ui = readRoute();
+    syncControls();
+    $("logs").replaceChildren(...origins.map((o) => h("a", { href: href(logRoute(o)), "data-origin": o }, o)));
+    if (state?.origin !== ui.origin || state.fault !== ui.fault) {
+      void load(ui.origin);
+    } else {
+      markCurrentLog(ui.origin);
+      applyFilter();
+      openDetailFromRoute();
+    }
   };
   window.addEventListener("hashchange", onRoute);
   window.addEventListener("popstate", onRoute);

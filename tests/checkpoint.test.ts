@@ -107,8 +107,8 @@ test("two signature lines from the same key reject the checkpoint", async () => 
 });
 
 test("a checkpoint for another log in the policy is not accepted in its place", async () => {
-  assert.ok((await verifyCheckpoint(policy, raw, "paic.google.com/log/0")).ok);
-  const r = await verifyCheckpoint(policy, raw, "paic.google.com/log/1");
+  assert.ok((await verifyCheckpoint(policy, raw, { expectedOrigin: "paic.google.com/log/0" })).ok);
+  const r = await verifyCheckpoint(policy, raw, { expectedOrigin: "paic.google.com/log/1" });
   assert.ok(!r.ok);
   assert.match(r.problems.join(";"), /checkpoint is for paic\.google\.com\/log\/0, not paic\.google\.com\/log\/1/);
 });
