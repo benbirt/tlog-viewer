@@ -10,6 +10,7 @@ import { verifyInteriorTiles } from "./interior.js";
 import { leafHash, rootFromLeafHashes } from "./merkle.js";
 import { type CheckpointResult, type SignatureResult, verifyCheckpoint } from "./note.js";
 import { logOrigins, parsePolicy, type QuorumNode } from "./policy.js";
+import { BUILD } from "./build_info.js";
 import { POLICY_SOURCE, POLICY_TEXT } from "./policy_data.js";
 import { HttpError, LogClient, TILE_WIDTH, tilePath, type TileRef, tilesForSize } from "./tiles.js";
 
@@ -999,6 +1000,12 @@ function init(): void {
   $("policy-source").replaceChildren(
     mono(POLICY_SOURCE.target), " from ",
     link(`${POLICY_SOURCE.repo}/tree/${POLICY_SOURCE.commit}`, `google-tlog-witness@${POLICY_SOURCE.commit.slice(0, 7)}`));
+  // A page that asks to be trusted as a verifier should say what it is.
+  $("build").replaceChildren(...(BUILD.commit
+    ? [link(`${BUILD.repo}/commit/${BUILD.commit}`, `tlog-viewer@${BUILD.commit.slice(0, 7)}`),
+      BUILD.dirty ? " with uncommitted changes" : "",
+      ". Its files can be checked against that source: see the ", link(`${BUILD.repo}#checking-the-deployed-site`, "README"), "."]
+    : ["a development build, not made from a recorded commit."]));
 
   // Each control writes its value to the route; filtering then reads the route.
   const onFilter = (change: () => Partial<Route>) => () => {
