@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { type Bytes, hex } from "../web/js/bytes.js";
@@ -138,25 +139,31 @@ test("tampered entries fail their checks", async () => {
   assert.deepEqual(junk.checks, { contentHash: null, signature: null });
 });
 
-test("DER signature conversion", () => {
-  const der = Uint8Array.from([0x30, 0x08, 0x02, 0x02, 0x00, 0x81, 0x02, 0x02, 0x01, 0x02]);
-  assert.equal(hex(derSignatureToRaw(der, 2)), "00810102");
-  assert.throws(() => derSignatureToRaw(der.subarray(0, 9), 2));
-});
 
-test("only strict DER signatures are accepted", () => {
-  const seq = (...ints: number[][]) => {
-    const body = ints.flatMap((i) => [0x02, i.length, ...i]);
-    return Uint8Array.from([0x30, body.length, ...body]);
-  };
-  assert.equal(hex(derSignatureToRaw(seq([0x7f], [0x00, 0x80]), 2)), "007f0080");
-  assert.throws(() => derSignatureToRaw(seq([0x80], [0x01]), 2), /negative/);
-  assert.throws(() => derSignatureToRaw(seq([0x00, 0x01], [0x01]), 2), /not minimal/);
-  assert.throws(() => derSignatureToRaw(seq([0x00, 0x00, 0x81], [0x01]), 2), /not minimal/);
-  assert.throws(() => derSignatureToRaw(seq([], [0x01]), 2), /truncated/);
-  assert.throws(() => derSignatureToRaw(seq([0x01, 0x02, 0x03], [0x01]), 2), /too large/);
-  // A long-form length where the short form would do.
-  assert.throws(() => derSignatureToRaw(Uint8Array.from([0x30, 0x81, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01]), 2), /short form/);
+test("ECDSA signatures are read only as strict DER", () => {
+  // A real signature from the log: SEQUENCE { INTEGER r, INTEGER s }.
+  const record = JSON.parse(Buffer.from(parseBundle(bundle)[0]!).toString());
+  const der: Bytes = new Uint8Array(Buffer.from(record.spec.signature.content, "base64"));
+  const rLen = der[3]!;
+  const r = [...der.subarray(4, 4 + rLen)];
+  const s = [...der.subarray(6 + rLen)];
+  const seq = (a: number[], b: number[]): Bytes =>
+    Uint8Array.from([0x30, a.length + b.length + 4, 0x02, a.length, ...a, 0x02, b.length, ...b]);
+  assert.deepEqual(seq(r, s), der);
+
+  const unsigned = (v: number[]) => hex(Uint8Array.from(v)).replace(/^00(?=[89a-f])/, "").padStart(64, "0");
+  assert.equal(hex(derSignatureToRaw(der)), unsigned(r) + unsigned(s));
+
+  const cases: [string, Bytes][] = [
+    ["an integer with a needless leading zero", seq([0, ...r], s)],
+    ["a negative integer", seq(r[0] === 0 ? r.slice(1) : [r[0]! | 0x80, ...r.slice(1)], s)],
+    ["a length in long form", Uint8Array.from([0x30, 0x81, der[1]!, ...der.subarray(2)])],
+    ["trailing data", Uint8Array.from([...der, 0])],
+    ["a truncated signature", der.subarray(0, der.length - 1)],
+    ["an empty integer", seq([], s)],
+    ["not a sequence", Uint8Array.from([0x31, ...der.subarray(1)])],
+  ];
+  for (const [what, bytes] of cases) assert.throws(() => derSignatureToRaw(bytes), Error, what);
 });
 
 /** The first real entry, with its JSON edited. */
@@ -284,4 +291,28 @@ test("tlog-proofs are written in the c2sp.org/tlog-proof form and read back", as
   assert.equal(back.checkpoint, checkpoint);
   assert.throws(() => parseTlogProof(text.replace("@v1", "@v2")), /malformed/);
   assert.throws(() => parseTlogProof(text.replace("index 3", "index 03")), /malformed/);
+});
+
+test("signing keys are read by kind, and fingerprinted as their SubjectPublicKeyInfo", async () => {
+  // A real key: its fingerprint is the SHA-256 of the DER inside the PEM.
+  const record = JSON.parse(Buffer.from(parseBundle(bundle)[0]!).toString());
+  const pem = Buffer.from(record.spec.signature.publicKey.content, "base64").toString();
+  const der = Buffer.from(pem.replace(/-----[A-Z ]+-----|\s/g, ""), "base64");
+  const real = await decodeEntry(parseBundle(bundle)[0]!);
+  assert.equal(real.keyFingerprint, createHash("sha256").update(der).digest("hex"));
+
+  // A key of another kind is recognised and fingerprinted, and its signature
+  // reported as not checked: this page verifies ECDSA P-256 only.
+  const { publicKey } = generateKeyPairSync("ec", { namedCurve: "P-384" });
+  const p384 = publicKey.export({ type: "spki", format: "pem" }) as string;
+  const other = await decodeEntry(editedEntry((r) => { r.spec.signature.publicKey.content = Buffer.from(p384).toString("base64"); }));
+  assert.deepEqual(other.checks, { contentHash: true, signature: null });
+  assert.equal(other.keyError, null);
+  assert.equal(other.keyFingerprint, createHash("sha256").update(publicKey.export({ type: "spki", format: "der" })).digest("hex"));
+
+  // A private key, or anything else in PEM armour, is not a public key.
+  const junk = "-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n";
+  const bad = await decodeEntry(editedEntry((r) => { r.spec.signature.publicKey.content = Buffer.from(junk).toString("base64"); }));
+  assert.deepEqual(bad.checks, { contentHash: true, signature: false });
+  assert.match(bad.keyError ?? "", /not a PEM public key/);
 });

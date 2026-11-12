@@ -2,7 +2,8 @@
 // to the stock hashedrekord schema) carries a base64 in-toto Statement with a
 // Project Oak endorsement predicate.
 
-import { b64Decode, type Bytes, hex, sha256, utf8Decode } from "./bytes.js";
+import { b64Decode, type Bytes, concat, hex, sha256, utf8Decode } from "./bytes.js";
+import { DER, importSPKI, numberToBytesBE } from "./deps.js";
 
 export interface Claim {
   type: string;
@@ -56,11 +57,11 @@ interface LoadedKey {
 
 const keyCache = new Map<string, Promise<LoadedKey>>();
 
-function pemToDer(pem: string): Bytes {
-  const m = /^-----BEGIN PUBLIC KEY-----\r?\n([A-Za-z0-9+\/=\r\n]+)-----END PUBLIC KEY-----(\r?\n)?$/.exec(pem);
-  if (!m) throw new Error("not a PEM public key");
-  return b64Decode(m[1]!.replace(/[\r\n]/g, ""));
-}
+// The kinds of key the PEM reader is asked to try, as JOSE algorithm names.
+// Only the first is verified with; the rest let a key of another common kind
+// be recognised and fingerprinted, so that its signature is reported as
+// unverifiable, not as failing.
+const KEY_KINDS = ["ES256", "ES384", "ES512", "Ed25519", "RS256"];
 
 /** Loads a base64(PEM SubjectPublicKeyInfo) key. */
 function loadKey(b64Pem: string): Promise<LoadedKey> {
@@ -68,15 +69,22 @@ function loadKey(b64Pem: string): Promise<LoadedKey> {
   if (!p) {
     p = (async () => {
       const pem = utf8Decode(b64Decode(b64Pem));
-      const der = pemToDer(pem);
-      const fingerprint = hex(await sha256(der));
-      let key: CryptoKey | null = null;
-      try {
-        key = await crypto.subtle.importKey("spki", der, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
-      } catch {
-        // Not a P-256 key; the signature is reported as unverifiable.
+      let read: CryptoKey | null = null;
+      let p256Key: CryptoKey | null = null;
+      for (const kind of KEY_KINDS) {
+        try {
+          read = await importSPKI(pem, kind, { extractable: true });
+          if (kind === "ES256") p256Key = read;
+          break;
+        } catch {
+          // Not a key of this kind; try the next.
+        }
       }
-      return { pem, fingerprint, key };
+      if (!read) throw new Error("not a PEM public key of a kind this page can read");
+      // The fingerprint is of the key as WebCrypto writes it back out, which
+      // for a conventionally encoded key is byte for byte what was read.
+      const spki = new Uint8Array(await crypto.subtle.exportKey("spki", read));
+      return { pem, fingerprint: hex(await sha256(spki)), key: p256Key };
     })();
     keyCache.set(b64Pem, p);
   }
@@ -84,44 +92,14 @@ function loadKey(b64Pem: string): Promise<LoadedKey> {
 }
 
 /**
- * Converts an ASN.1 DER ECDSA-Sig-Value to the r||s form WebCrypto wants.
- * Only strict DER is accepted, as by the Go and OpenSSL verifiers: short-form
- * lengths, and positive integers with no more leading zeros than their sign
- * needs. `size` is the byte length of the curve order, at most 61 so that
- * every length fits the short form.
+ * Converts an ASN.1 DER ECDSA P-256 signature to the r||s form WebCrypto
+ * wants. Throws unless it is strict DER holding two integers that fit.
+ * Whether they are in range for the curve is left to verification.
  */
-export function derSignatureToRaw(der: Bytes, size: number = 32): Bytes {
-  let p = 0;
-  const byte = (): number => {
-    const b = der[p++];
-    if (b === undefined) throw new Error("truncated DER");
-    return b;
-  };
-  const readLen = (): number => {
-    const len = byte();
-    if (len & 0x80) throw new Error("DER length is not in short form");
-    return len;
-  };
-  if (byte() !== 0x30) throw new Error("bad DER signature");
-  const seqLen = readLen();
-  if (p + seqLen !== der.length) throw new Error("bad DER signature length");
-  const out = new Uint8Array(size * 2);
-  for (let i = 0; i < 2; i++) {
-    if (byte() !== 0x02) throw new Error("bad DER integer");
-    const len = readLen();
-    let v = der.subarray(p, p + len);
-    if (len === 0 || v.length !== len) throw new Error("truncated DER integer");
-    p += len;
-    if (v[0]! & 0x80) throw new Error("negative DER integer");
-    if (v[0] === 0 && v.length > 1) {
-      if (!(v[1]! & 0x80)) throw new Error("DER integer is not minimal");
-      v = v.subarray(1);
-    }
-    if (v.length > size) throw new Error("DER integer too large");
-    out.set(v, size * (i + 1) - v.length);
-  }
-  if (p !== der.length) throw new Error("trailing DER data");
-  return out;
+export function derSignatureToRaw(der: Bytes): Bytes {
+  // An encoded integer may carry one sign byte beyond the 32 of its value.
+  const { r, s } = DER.toSig(der, 33);
+  return concat(new Uint8Array(numberToBytesBE(r, 32)), new Uint8Array(numberToBytesBE(s, 32)));
 }
 
 // Log entries are untrusted JSON: read them without assuming any shape.

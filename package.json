@@ -8,5 +8,9 @@
     "@types/node": "24.19.2",
     "playwright-core": "1.65.0",
     "typescript": "7.0.2"
+  },
+  "dependencies": {
+    "@noble/curves": "2.4.0",
+    "jose": "6.2.17"
   }
 }

@@ -47,9 +47,18 @@ elsewhere needs a change there and in the `connect-src` of `web/index.html`.
     bazel run //:serve        # http://127.0.0.1:8080/
     bazel build //:site       # static site in bazel-bin/site
 
-The code is TypeScript, compiled file-for-file by `tsc` with no bundler and no
-runtime dependencies. TypeScript and Node's types are the only npm packages;
-change them with pnpm through Bazel (see `MODULE.bazel`).
+The code is TypeScript, compiled file-for-file by `tsc` and served as written.
+All cryptographic verification is done by the browser's WebCrypto. Two
+third-party libraries do the generic parsing that has well-used
+implementations: [jose](https://github.com/panva/jose) reads PEM public keys,
+and [@noble/curves](https://github.com/paulmillr/noble-curves) parses ASN.1 DER
+signatures. They enter through one module, `web/js/deps.ts`, which esbuild
+bundles into the single file `js/deps.js` (unminified, about 21 kB); their
+licences are generated from that bundle and served beside it. The transparency
+formats themselves (signed notes, checkpoints, cosignatures, tlog-policy,
+tiles, proofs) have no established JavaScript library and are implemented
+here, tested against the Go reference implementations' output. Change npm
+packages with pnpm through Bazel (see `MODULE.bazel`).
 
 - `web/js/policy.ts`, `note.ts`, `merkle.ts`, `tiles.ts`, `interior.ts`,
   `grow.ts`, `entry.ts` — the verifier, with no DOM dependencies.
