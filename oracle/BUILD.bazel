@@ -1,21 +1,17 @@
-load("@rules_go//go:def.bzl", "go_binary")
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("@rules_tinygo//tinygo:defs.bzl", "tinygo_binary")
+load(":tinygo.bzl", "tinygo_wasm_exec")
 
 # The Go implementations of the transparency formats as a WebAssembly module,
-# for the differential tests in //:tests/oracle. See main.go.
+# for the differential tests in //:tests/oracle. See main.go. It is built
+# twice from the same source, by the Go compiler and by TinyGo.
 package(default_visibility = ["//:__pkg__"])
 
-# Built with the Go compiler.
-go_binary(
-    name = "oracle_go",
+go_library(
+    name = "oracle_lib",
     srcs = ["main.go"],
-    out = "oracle_go.wasm",
-    gc_linkopts = [
-        "-s",
-        "-w",
-    ],
-    goarch = "wasm",
-    goos = "js",
-    pure = "on",
+    importpath = "github.com/benbirt/tlog-viewer/oracle",
+    visibility = ["//visibility:private"],
     deps = [
         "@com_github_transparency_dev_formats//log",
         "@com_github_transparency_dev_formats//policy",
@@ -25,56 +21,38 @@ go_binary(
     ],
 )
 
+go_binary(
+    name = "oracle_go",
+    out = "oracle_go.wasm",
+    embed = [":oracle_lib"],
+    gc_linkopts = [
+        "-s",
+        "-w",
+    ],
+    goarch = "wasm",
+    goos = "js",
+    pure = "on",
+)
+
 # The JavaScript half of Go's WebAssembly runtime, from the Go SDK.
 genrule(
     name = "go_wasm_exec",
-    outs = ["go_wasm_exec.js"],
     srcs = ["@go_sdk//:lib/wasm/wasm_exec.js"],
+    outs = ["go_wasm_exec.js"],
     cmd = "cp $< $@",
 )
 
-# Built with TinyGo, from the same source: a quarter of the size. TinyGo
-# resolves the Go modules itself, so this build fetches them (go.sum pins
-# what it gets) and is not hermetic. Its scratch files go in the sandbox's
-# own directory, which Bazel discards.
-genrule(
+# rules_tinygo has TinyGo resolve third-party Go modules itself, so this build
+# fetches them (go.sum pins what it gets) and is not hermetic.
+tinygo_binary(
     name = "oracle_tinygo",
-    srcs = [
-        "main.go",
-        "//:go.mod",
-        "//:go.sum",
-    ],
-    outs = ["oracle_tinygo.wasm"],
-    cmd = """
-        set -eu
-        work=$$PWD/tinygo_work
-        goroot=$$PWD/$$(dirname $$(dirname $(execpath @go_sdk//:bin/go)))
-        mkdir -p "$$work/src/oracle"
-        cp $(location //:go.mod) $(location //:go.sum) "$$work/src/"
-        cp $(location main.go) "$$work/src/oracle/"
-        tinygo=$$PWD/$(execpath @tinygo_linux_amd64//:bin/tinygo)
-        out=$$PWD/$@
-        cd "$$work/src"
-        HOME="$$work" GOROOT="$$goroot" PATH="$$goroot/bin:$$PATH" GOMODCACHE="$$work/mod" GOCACHE="$$work/cache" GOFLAGS=-mod=mod \\
-            "$$tinygo" build -target wasm -no-debug -o "$$out" ./oracle
-    """,
-    tags = ["requires-network"],
-    target_compatible_with = [
-        "@platforms//os:linux",
-        "@platforms//cpu:x86_64",
-    ],
-    tools = [
-        "@go_sdk//:bin/go",
-        "@go_sdk//:files",
-        "@tinygo_linux_amd64//:bin/tinygo",
-        "@tinygo_linux_amd64//:files",
-    ],
+    out = "oracle_tinygo.wasm",
+    embed = [":oracle_lib"],
+    go_sdk = "@go_sdk//:go_sdk",
+    mod = "//:go.mod",
+    sum = "//:go.sum",
+    target = "wasm",
 )
 
 # TinyGo's own JavaScript runtime, which differs from Go's.
-genrule(
-    name = "tinygo_wasm_exec",
-    srcs = ["@tinygo_linux_amd64//:targets/wasm_exec.js"],
-    outs = ["tinygo_wasm_exec.js"],
-    cmd = "cp $< $@",
-)
+tinygo_wasm_exec(name = "tinygo_wasm_exec")

@@ -3,7 +3,7 @@
 #
 # Not covered here: the google-tlog-witness commit, .bazelversion, the Bazel
 # modules (Dependabot cannot evaluate a MODULE.bazel that uses rules_js), the
-# Node version and the TinyGo release, all of which update-pins.yaml advances.
+# Node version and the rules_tinygo commit, all of which update-pins.yaml advances.
 version: 2
 updates:
   # package.json and pnpm-lock.yaml: TypeScript and Node's types.

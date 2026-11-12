@@ -127,9 +127,11 @@ repeated signature lines, empty extension lines, vkeys whose key ID is not the
 one their name and key imply, relative URLs, and proofs in any form but the one
 the page writes. Any other disagreement fails the build.
 
-The oracle is built twice from the same source, by the Go compiler (5.8 MB) and
-by TinyGo (1.5 MB), and the tests run against each. It is used only by tests;
-nothing of it is in the site.
+The oracle is built twice from the same source, by the Go compiler with
+rules_go and by TinyGo with [rules_tinygo](https://github.com/ptxmac/rules_tinygo),
+and the tests run against each. It is used only by tests; nothing of it is in
+the site. The TinyGo build has TinyGo fetch the third-party Go modules itself,
+so it needs the network; `go.sum` pins what it gets.
 
 ## Checking the deployed site
 
@@ -157,7 +159,7 @@ once CI passes:
 | `.bazelversion` | `update-pins.yaml` | daily |
 | Bazel modules (`bazel_dep` versions) | `update-pins.yaml` | daily |
 | Node, within its major version | `update-pins.yaml` | daily |
-| TinyGo | `update-pins.yaml` | daily |
+| rules_tinygo commit | `update-pins.yaml` | daily |
 | npm packages, Go modules, GitHub Actions | Dependabot, merged by `dependabot-auto-merge.yaml` | weekly |
 
 `pages.yaml` deploys on every push to `main`, which includes those merges.
