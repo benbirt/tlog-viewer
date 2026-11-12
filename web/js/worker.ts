@@ -2,7 +2,7 @@
 // thread, with its own instance of the verifier to split and hash them. Requests and replies are plain data; see pool.ts for the other end.
 
 import type { Bytes } from "./bytes.js";
-import { faultById, faultyFetch } from "./faults.js";
+import { faultById } from "./faults.js";
 import { checkBundle, type CheckedEntry } from "./ingest.js";
 import { verifierFromPage } from "./gowasm.js";
 import { HttpError, LogClient } from "./tiles.js";
@@ -26,7 +26,7 @@ const verifier = verifierOver(async (fn, ...args) => (await go)(fn, ...args));
 
 async function handle(req: WorkerRequest): Promise<WorkerResult> {
   const fault = faultById(req.fault);
-  const client = new LogClient(req.base, fault ? faultyFetch(fault, req.base) : undefined);
+  const client = new LogClient(req.base, undefined, undefined, fault ?? undefined);
   return checkBundle(client, verifier, req.tile, req.from, req.size, req.tileLeafHashes, fault);
 }
 

@@ -42,7 +42,7 @@ export async function checkBundle(
   client: LogClient, verifier: Pick<Verifier, "splitBundle" | "leafHash">, tile: TileRef, from: number, size: number,
   tileLeafHashes: Bytes, fault: Fault | null,
 ): Promise<CheckedEntry[]> {
-  const bundle = await verifier.splitBundle(await client.bytes(tile.entries));
+  const bundle = await verifier.splitBundle(await client.entryBundle(tile));
   if (bundle.length !== tile.width) throw new Error(`entry bundle ${tile.entries} has ${bundle.length} entries, want ${tile.width}`);
   const altered = fault?.entry ? faultTargets(size) : [];
   const out: CheckedEntry[] = [];

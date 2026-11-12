@@ -97,9 +97,10 @@
 <footer class="wrap foot">
   <p>Trust policy: <span id="policy-source"></span>. Log and witness keys are compiled into this page.</p>
   <p>This page: <span id="build"></span></p>
-  <p>Checkpoints, cosignatures, the Merkle tree and proofs are checked by the Go implementations of the formats,
-    <a href="https://github.com/transparency-dev/formats" rel="noopener noreferrer" target="_blank">transparency-dev/formats</a> and
-    <a href="https://pkg.go.dev/golang.org/x/mod/sumdb/tlog" rel="noopener noreferrer" target="_blank">sumdb/tlog</a>,
+  <p>Checkpoints, cosignatures, the Merkle tree, tiles and proofs are handled by the Go implementations of the formats,
+    <a href="https://github.com/transparency-dev/formats" rel="noopener noreferrer" target="_blank">transparency-dev/formats</a>,
+    <a href="https://pkg.go.dev/golang.org/x/mod/sumdb/tlog" rel="noopener noreferrer" target="_blank">sumdb/tlog</a> and
+    <a href="https://github.com/transparency-dev/tessera" rel="noopener noreferrer" target="_blank">tessera</a>,
     compiled to WebAssembly (<a href="wasm/NOTICE.txt">licences</a>). Entry signatures are checked by the browser, after
     <a href="https://github.com/panva/jose" rel="noopener noreferrer" target="_blank">jose</a> reads PEM keys and
     <a href="https://github.com/paulmillr/noble-curves" rel="noopener noreferrer" target="_blank">@noble/curves</a> parses DER signatures

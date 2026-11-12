@@ -5,7 +5,7 @@ import { b64Encode, type Bytes, bytesEqual, hex } from "./bytes.js";
 import { claimDocumentUrl, claimTitle } from "./claims.js";
 import { logBaseUrl } from "./config.js";
 import { statementTextOf, type Summary } from "./entry.js";
-import { type Fault, faultById, FAULTS, faultyFetch } from "./faults.js";
+import { type Fault, faultById, FAULTS } from "./faults.js";
 import { extendLeafHashes } from "./grow.js";
 import type { CheckedEntry } from "./ingest.js";
 import { verifyInteriorTiles } from "./interior.js";
@@ -302,7 +302,7 @@ async function load(origin: string, attempt = 0): Promise<void> {
     fault: fault?.id ?? null,
     abort,
     workers: new WorkerPool(verifierModule),
-    client: new LogClient(base, fault ? faultyFetch(fault, base) : undefined, abort.signal),
+    client: new LogClient(base, undefined, abort.signal, fault ?? undefined),
     size: 0,
     leafHashes: null,
     tiles: [],

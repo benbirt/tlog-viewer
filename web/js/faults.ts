@@ -1,9 +1,9 @@
 // Failures the viewer can simulate, so that its behaviour under them can be
 // seen without waiting for a log to misbehave. Each alters data after it has
-// been fetched; nothing here can make a check pass that would otherwise fail.
+// been fetched (a LogClient applies the checkpoint and tile rewrites); nothing here can make a check pass that would otherwise fail.
 
 import { b64Decode, b64Encode, type Bytes, utf8Decode, utf8Encode } from "./bytes.js";
-import type { Fetch } from "./tiles.js";
+import type { LogFile } from "./tiles.js";
 
 export interface Fault {
   id: string;
@@ -14,8 +14,8 @@ export interface Fault {
   checkpoint?: (raw: string) => string;
   /** Serves the checkpoint of a different log in the policy. */
   checkpointFromOtherLog?: boolean;
-  /** Rewrites a tile, given its path relative to the log; "error" fails the request. */
-  tile?: (path: string, bytes: Bytes) => Bytes | "error";
+  /** Rewrites a hash tile or entry bundle; "error" fails the request. */
+  tile?: (file: LogFile, bytes: Bytes) => Bytes | "error";
   /**
    * Rewrites an entry. With `entryStage` "served" the change is made to what
    * the log serves, so the entry no longer matches its leaf hash. With
@@ -121,19 +121,19 @@ export const FAULTS: Fault[] = [
     id: "leaf-hashes",
     title: "Leaf hashes not matching checkpoint",
     description: "One hash in the first leaf-hash tile is altered. The recomputed Merkle root differs from the checkpoint's, so none of the log's entries are shown.",
-    tile: (path, bytes) => (/^tile\/0\/000(\.p\/\d+)?$/.test(path) ? flipFirstByte(bytes) : bytes),
+    tile: (file, bytes) => (file.kind === "hashes" && file.level === 0 && file.index === 0 ? flipFirstByte(bytes) : bytes),
   },
   {
     id: "interior-tile",
     title: "Interior tile not matching leaf hashes",
     description: "One hash in a level-1 interior tile is altered. The entries still verify against the checkpoint, but the log serves an inconsistent interior tile. Logs with fewer than 256 entries have no interior tiles.",
-    tile: (path, bytes) => (/^tile\/1\//.test(path) ? flipFirstByte(bytes) : bytes),
+    tile: (file, bytes) => (file.kind === "hashes" && file.level === 1 ? flipFirstByte(bytes) : bytes),
   },
   {
     id: "tile-unavailable",
     title: "Unavailable entry bundle",
     description: "Requests for the oldest entry bundle fail, as if the server returned an error.",
-    tile: (path, bytes) => (/^tile\/entries\/000(\.p\/\d+)?$/.test(path) ? "error" : bytes),
+    tile: (file, bytes) => (file.kind === "entries" && file.index === 0 ? "error" : bytes),
   },
   {
     id: "entry-swapped",
@@ -178,20 +178,3 @@ export const FAULTS: Fault[] = [
 ];
 
 export const faultById = (id: string | null): Fault | null => FAULTS.find((f) => f.id === id) ?? null;
-
-/** Wraps a fetch for the log at `base` so that it applies a fault's checkpoint and tile rewrites. */
-export function faultyFetch(fault: Fault, base: string, inner: Fetch = (url, init) => fetch(url, init)): Fetch {
-  return async (url, init) => {
-    const res = await inner(url, init);
-    if (!res.ok || !url.startsWith(base)) return res;
-    const path = url.slice(base.length);
-    if (path === "checkpoint" && fault.checkpoint) {
-      return new Response(fault.checkpoint(await res.text()));
-    }
-    if (path.startsWith("tile/") && fault.tile) {
-      const out = fault.tile(path, new Uint8Array(await res.arrayBuffer()));
-      return out === "error" ? new Response("simulated failure", { status: 503 }) : new Response(out);
-    }
-    return res;
-  };
-}
