@@ -42,15 +42,13 @@ genrule(
     cmd = "cp $< $@",
 )
 
-# rules_tinygo has TinyGo resolve third-party Go modules itself, so this build
-# fetches them (go.sum pins what it gets) and is not hermetic.
+# Built from the same go_library and the dependencies Bazel resolved for it,
+# with no network access.
 tinygo_binary(
     name = "oracle_tinygo",
     out = "oracle_tinygo.wasm",
     embed = [":oracle_lib"],
-    go_sdk = "@go_sdk//:go_sdk",
-    mod = "//:go.mod",
-    sum = "//:go.sum",
+    tags = ["block-network"],
     target = "wasm",
 )
 

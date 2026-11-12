@@ -112,13 +112,14 @@ jobs:
 
       # rules_tinygo builds one of the two test oracles (//oracle). Like
       # google-tlog-witness it is not in a registry, so it is followed by commit.
+      # For now that is the hermetic-embed branch of a fork, which builds with no
+      # network access; go back to ptxmac/rules_tinygo once that is merged there.
       - name: Update the rules_tinygo commit
         if: matrix.pin == 'rules_tinygo'
         run: |
-          upstream=https://github.com/ptxmac/rules_tinygo
-          # Its default branch, whatever that is called.
-          new=$(git ls-remote "$upstream.git" HEAD | cut -f1)
-          [[ "$new" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::could not resolve upstream HEAD"; exit 1; }
+          upstream=https://github.com/benbirt/rules_tinygo
+          new=$(git ls-remote "$upstream.git" refs/heads/hermetic-embed | cut -f1)
+          [[ "$new" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::could not resolve the hermetic-embed branch"; exit 1; }
           old=$(sed -n -E '/module_name = "rules_tinygo"/,/^\)/ s/.*commit = "([0-9a-f]{40})".*/\1/p' MODULE.bazel)
           [[ "$old" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no rules_tinygo pin in MODULE.bazel"; exit 1; }
           sed -i -E '/module_name = "rules_tinygo"/,/^\)/ s/commit = "[0-9a-f]{40}"/commit = "'"$new"'"/' MODULE.bazel

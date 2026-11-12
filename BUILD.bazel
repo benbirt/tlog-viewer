@@ -195,11 +195,6 @@ js_test(
     },
 )
 
-exports_files([
-    "go.mod",
-    "go.sum",
-])
-
 # The TypeScript verifier against the Go implementations of the same formats
 # (//oracle), once for each compiler the oracle is built with.
 [
