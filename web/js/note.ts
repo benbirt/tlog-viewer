@@ -97,6 +97,8 @@ export interface CheckpointResult {
 
 /** Splits a signed note into its text and signature lines. */
 export function parseNote(raw: string): Note {
+  // A note has no control characters other than its newlines.
+  if (/[\x00-\x09\x0b-\x1f]/.test(raw)) throw new Error("malformed note: control character");
   const split = raw.lastIndexOf("\n\n");
   if (split < 0) throw new Error("malformed note: no signature block");
   const text = raw.slice(0, split + 1);
@@ -227,7 +229,7 @@ export async function newVerifier(vkey: VKey, disabledAlgs?: ReadonlySet<number>
 }
 
 /** The latest time T such that the cosignatures made at or after T meet the quorum. */
-function quorumTime(policy: Policy, cosignedAt: ReadonlyMap<string, bigint>): bigint | null {
+export function quorumTime(policy: Policy, cosignedAt: ReadonlyMap<string, bigint>): bigint | null {
   if (policy.quorum === "none") return null;
   const newestFirst = [...cosignedAt].sort(([, a], [, b]) => (a > b ? -1 : a < b ? 1 : 0));
   const names = new Set<string>();

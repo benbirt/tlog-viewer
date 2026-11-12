@@ -127,6 +127,22 @@ repeated signature lines, empty extension lines, vkeys whose key ID is not the
 one their name and key imply, relative URLs, and proofs in any form but the one
 the page writes. Any other disagreement fails the build.
 
+### The Go implementation in the page (prototype)
+
+Adding `engine=go` to the address (or choosing it in the debug menu) has the
+page verify checkpoints with the Go implementation itself, the TinyGo build of
+`//oracle` running as WebAssembly (`web/js/goengine.ts`). The policy's verdict
+and the state of every signature then come from `formats`; ML-DSA-44 works in
+any browser, since it no longer depends on WebCrypto. The module is about
+1.5 MB (0.6 MB compressed) and is fetched only when asked for. The default
+remains the TypeScript verifier. A test checks that the two give the page the
+same result, and the browser tests run every simulated failure under both.
+
+The Go engine is as lenient as Go where the TypeScript is deliberately
+stricter: it cannot see a signature line that exactly repeats an earlier one,
+and accepts non-canonical base64 and empty extension lines. Merkle hashing,
+proofs, tiles and entries are still the TypeScript in either case.
+
 The oracle is built twice from the same source, by the Go compiler with
 rules_go and by TinyGo with [rules_tinygo](https://github.com/ptxmac/rules_tinygo) (for now a
 [fork](https://github.com/benbirt/rules_tinygo/tree/hermetic-embed) that builds hermetically),

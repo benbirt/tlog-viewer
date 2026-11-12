@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; worker-src 'self'; style-src 'self'; connect-src https://www.gstatic.com https://raw.githubusercontent.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; style-src 'self'; connect-src 'self' https://www.gstatic.com https://raw.githubusercontent.com; base-uri 'none'; form-action 'none'">
 <title>PAIC log viewer</title>
 <link rel="stylesheet" href="style.css">
 <script type="module" src="js/app.js"></script>
@@ -107,6 +107,7 @@
     <p>Each option simulates a failure inside this browser to show how the page responds. None can
       make a check pass. The selection is kept in the URL so the view can be shared.</p>
     <ul id="debug-list"></ul>
+    <p id="engine-choice"></p>
   </details>
 </footer>
 </body>

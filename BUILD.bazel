@@ -142,18 +142,26 @@ copy_to_directory(
     srcs = [
         "web/index.html",
         "web/style.css",
+        "web/wasm/NOTICE.txt",
         ":build_info",
         ":deps_bundle",
         ":licenses",
         ":policy_data",
         ":web",
+        # The Go implementation as WebAssembly, for the page's optional
+        # engine=go verifier (web/js/goengine.ts).
+        "//oracle:oracle_tinygo",
+        "//oracle:tinygo_wasm_exec",
     ],
     # tsc's own deps.js, with its bare imports, gives way to the bundle.
     exclude_srcs_patterns = [
         "**/*.d.ts",
         "**/js/deps.js",
     ],
-    replace_prefixes = {"bundled": "js"},
+    replace_prefixes = {
+        "bundled": "js",
+        "oracle": "wasm",
+    },
     root_paths = ["web"],
 )
 

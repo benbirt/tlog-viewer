@@ -11,7 +11,8 @@ import { readFileSync } from "node:fs";
 import { before, test } from "node:test";
 import { b64Encode, type Bytes, concat, hex, sha256, utf8Encode } from "../../web/js/bytes.js";
 import { inclusionProof, rootFromLeafHashes } from "../../web/js/merkle.js";
-import { newVerifier, verifyCheckpoint } from "../../web/js/note.js";
+import { resultFromInspection } from "../../web/js/goengine.js";
+import { type CheckpointResult, newVerifier, verifyCheckpoint } from "../../web/js/note.js";
 import { ALG_ED25519, ALG_ED25519_COSIG, ALG_MLDSA44, parsePolicy } from "../../web/js/policy.js";
 import { POLICY_TEXT } from "../../web/js/policy_data.js";
 import { formatTlogProof, parseTlogProof } from "../../web/js/proof.js";
@@ -521,4 +522,85 @@ test("tree heads and inclusion proofs equal the Go implementation's", async () =
     }
   }
   console.log(`tree heads and inclusion proofs [${oracle.variant}]: ${compared} agree`);
+});
+
+// ---------------------------------------------------------------------------
+// The page's Go engine
+
+test("the page's Go engine and its TypeScript verifier give the page the same result", async () => {
+  // engine=go has the page take its checkpoint result from the Go code
+  // (goengine.ts). Whatever the page would show must not depend on the engine.
+  const policy = parsePolicy(POLICY);
+  const options = { expectedOrigin: "paic.google.com/log/0" };
+  const split = CHECKPOINT.lastIndexOf("\n\n");
+  const body = CHECKPOINT.slice(0, split + 1);
+  const sigs = CHECKPOINT.slice(split + 2).split("\n").filter((l) => l !== "");
+  const withSigs = (lines: string[], text = body) => text + "\n" + lines.map((l) => l + "\n").join("");
+
+  const cases: string[] = [CHECKPOINT];
+  for (let i = 0; i < sigs.length; i++) {
+    cases.push(withSigs(sigs.filter((_, j) => j !== i)));
+    cases.push(withSigs([sigs[i]!]));
+    cases.push(withSigs([...sigs, sigs[i]!]));
+    for (const at of [0, 5, 12, -1]) {
+      cases.push(editSignature(CHECKPOINT, i, (b) => { b[at < 0 ? b.length + at : at]! ^= 1; }));
+    }
+  }
+  cases.push(withSigs([]), withSigs(sigs.slice(0, 2)), withSigs(sigs.slice(2)), withSigs([...sigs].reverse()),
+    withSigs(sigs, body.replace("5522", "5523")), withSigs(sigs, body.replace("log/0", "log/1")), withSigs(sigs, body + "extension\n"),
+    CHECKPOINT + "— example.com/witness " + Buffer.alloc(76, 7).toString("base64") + "\n");
+  const r = random(6);
+  for (let i = 0; i < 150; i++) cases.push(mutateLines(r, CHECKPOINT));
+
+  /** What the page displays of a result, in comparable form. */
+  const shown = (res: CheckpointResult) => ({
+    ok: res.ok,
+    origin: res.checkpoint.origin,
+    size: res.checkpoint.size,
+    hash: b64Encode(res.checkpoint.hash),
+    extensions: res.checkpoint.extensions,
+    text: res.text,
+    signatures: res.signatures.map((s) => ({ ...s, timestamp: s.timestamp?.toString() ?? null })),
+    logSigned: res.logSigned,
+    quorum: res.quorum,
+    quorumPossible: res.quorumPossible,
+    witnessedAt: res.witnessedAt?.toString() ?? null,
+    extensionsAuthenticated: res.extensionsAuthenticated,
+    problems: res.problems,
+    warnings: res.warnings,
+  });
+
+  let same = 0;
+  let malformed = 0;
+  let repeats = 0;
+  let refusedByGo = 0;
+  for (const raw of cases) {
+    let ts: CheckpointResult | Error;
+    let go: CheckpointResult | Error;
+    try { ts = await verifyCheckpoint(policy, raw, options); } catch (e) { ts = e as Error; }
+    try { go = resultFromInspection(policy, oracle.inspectCheckpoint(POLICY, raw), options); } catch (e) { go = e as Error; }
+    if (ts instanceof Error) {
+      // The TypeScript refuses some texts outright that Go reads; then Go must at least not accept them,
+      // unless it is one of the forms the page is deliberately stricter about.
+      if (!(go instanceof Error) && go.ok) assert.notEqual(stricterReason(ts.message), null, `Go engine accepts what the page refuses (${ts.message}): ${JSON.stringify(raw.slice(0, 200))}`);
+      malformed++;
+      continue;
+    }
+    if (go instanceof Error) {
+      // Go may refuse outright what the TypeScript reads and then rejects; never what it accepts.
+      assert.ok(!ts.ok, `Go engine refuses what the page accepts: ${go.message}\n${JSON.stringify(raw.slice(0, 300))}`);
+      refusedByGo++;
+      continue;
+    }
+    // Go's note reader drops a signature line identical to an earlier one, so
+    // its engine never sees the repeat that the TypeScript rejects.
+    if (ts.problems.some((p) => /more than one signature line/.test(p)) && go.signatures.length < ts.signatures.length) {
+      repeats++;
+      continue;
+    }
+    assert.deepEqual(shown(go), shown(ts), JSON.stringify(raw.slice(0, 300)));
+    same++;
+  }
+  console.log(`the page's two engines [${oracle.variant}]: ${same} identical results, ${malformed} refused by the TypeScript, ${repeats} with a repeated line only it sees, ${refusedByGo} refused by Go alone`);
+  assert.ok(same > 100);
 });

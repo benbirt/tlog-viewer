@@ -9,6 +9,7 @@ const types: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript",
   ".css": "text/css",
+  ".wasm": "application/wasm",
 };
 
 createServer(async (req, res) => {

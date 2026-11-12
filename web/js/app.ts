@@ -6,6 +6,7 @@ import { claimDocumentUrl, claimTitle } from "./claims.js";
 import { logBaseUrl } from "./config.js";
 import { statementTextOf, type Summary } from "./entry.js";
 import { type Fault, faultById, FAULTS, faultyFetch } from "./faults.js";
+import { verifyCheckpointGo } from "./goengine.js";
 import { extendLeafHashes } from "./grow.js";
 import type { CheckedEntry } from "./ingest.js";
 import { verifyInteriorTiles } from "./interior.js";
@@ -31,6 +32,8 @@ type Entry = CheckedEntry;
 /** Everything known about the log on screen; replaced wholesale on switching logs. */
 interface LogState {
   origin: string;
+  /** Which implementation verifies checkpoints for this load. */
+  engine: Engine;
   /** The simulated failure this load ran under, by id. */
   fault: string | null;
   /** Cancels the requests of a load that has been superseded. */
@@ -59,6 +62,12 @@ interface LogState {
   /** Loading stopped on an error, so entries not yet loaded will not be. */
   failed: boolean;
 }
+
+/**
+ * Checkpoints are verified by the TypeScript in note.ts or, as a prototype,
+ * by the Go implementation compiled to WebAssembly (goengine.ts).
+ */
+type Engine = "ts" | "go";
 
 type StepId = "step-log" | "step-quorum" | "step-root" | "step-entries";
 const STEPS: StepId[] = ["step-log", "step-quorum", "step-root", "step-entries"];
@@ -156,6 +165,8 @@ interface Route {
   keys: boolean;
   /** The simulated failure in effect, by id. */
   fault: string | null;
+  /** Which implementation verifies checkpoints. */
+  engine: Engine;
 }
 
 const PAGE_SIZES = [25, 50, 100, 250];
@@ -182,6 +193,7 @@ function readRoute(): Route {
     checkpoint: p.get("checkpoint") === "1",
     keys: p.get("keys") === "1",
     fault: faultById(p.get("fault"))?.id ?? null,
+    engine: p.get("engine") === "go" ? "go" : "ts",
   };
 }
 
@@ -198,13 +210,14 @@ function href(r: Route): string {
   if (r.keys) p.set("keys", "1");
   if (r.entry !== null) p.set("entry", String(r.entry));
   if (r.fault) p.set("fault", r.fault);
+  if (r.engine === "go") p.set("engine", "go");
   return "#" + p.toString().replaceAll("%2F", "/");
 }
 
 /** A log's default view, keeping any simulated failure in effect. */
 const logRoute = (origin: string): Route => ({
   origin, entry: null, q: "", validity: "", publisher: "", problems: false,
-  page: 0, pageSize: ui.pageSize, checkpoint: false, keys: false, fault: ui.fault,
+  page: 0, pageSize: ui.pageSize, checkpoint: false, keys: false, fault: ui.fault, engine: ui.engine,
 });
 
 /** The route on screen. Changes to it go through navigate(). */
@@ -285,6 +298,7 @@ async function load(origin: string, attempt = 0): Promise<void> {
   const s: LogState = {
     origin,
     fault: fault?.id ?? null,
+    engine: ui.engine,
     abort,
     workers: new WorkerPool(),
     client: new LogClient(base, fault ? faultyFetch(fault, base) : undefined, abort.signal),
@@ -418,6 +432,9 @@ function fetchCheckpoint(s: LogState): Promise<string> {
 }
 
 function verifyFetched(s: LogState, raw: string): Promise<CheckpointResult> {
+  // The Go implementation verifies every algorithm itself, so a simulated
+  // lack of one in the browser does not apply to it.
+  if (s.engine === "go") return verifyCheckpointGo(policy, POLICY_TEXT, raw, { expectedOrigin: s.origin });
   return verifyCheckpoint(policy, raw, {
     expectedOrigin: s.origin,
     disabledAlgs: new Set(faultById(s.fault)?.disabledAlgs),
@@ -446,7 +463,8 @@ function showCheckpointSteps(s: LogState, result: CheckpointResult): boolean {
   if (result.logSigned) {
     setStep("step-log", logAlgs("invalid") ? "warn" : "ok", `Signed by the log (${logAlgs("valid")})` +
       (logAlgs("invalid") ? `; its ${logAlgs("invalid")} signature is invalid` : "") +
-      (logAlgs("unsupported") ? `; this browser cannot verify ${logAlgs("unsupported")}` : "") + ".");
+      (logAlgs("unsupported") ? `; this browser cannot verify ${logAlgs("unsupported")}` : "") + "." +
+      (s.engine === "go" ? " Verified by the Go implementation (WebAssembly)." : ""));
   } else if (logUnsupportedOnly) {
     setStep("step-log", "fail", `The log signs with ${logAlgs("unsupported")} only, which this browser cannot verify.`);
   } else {
@@ -1098,6 +1116,12 @@ function renderDebug(fault: Fault | null): void {
   $("debug-list").replaceChildren(
     item(null, "None", "Shows the log as served, without alterations."),
     ...FAULTS.map((f) => item(f.id, f.title, f.description)));
+  const engine = (id: Engine, title: string) =>
+    h("a", { href: href({ ...ui, engine: id, entry: null }), ...(id === ui.engine ? { "aria-current": "true" } : {}) }, title);
+  $("engine-choice").replaceChildren(
+    "Checkpoint verifier: ", engine("ts", "TypeScript with WebCrypto"), " (the default) or ",
+    engine("go", "the Go implementation as WebAssembly"), " (a prototype, about 0.6 MB to download; ",
+    h("a", { href: "wasm/NOTICE.txt" }, "notices"), ").");
 }
 
 function init(): void {
@@ -1170,7 +1194,7 @@ function init(): void {
     ui = readRoute();
     syncControls();
     $("logs").replaceChildren(...origins.map((o) => h("a", { href: href(logRoute(o)), "data-origin": o }, o)));
-    if (state?.origin !== ui.origin || state.fault !== ui.fault) {
+    if (state?.origin !== ui.origin || state.fault !== ui.fault || state.engine !== ui.engine) {
       void load(ui.origin);
     } else {
       markCurrentLog(ui.origin);

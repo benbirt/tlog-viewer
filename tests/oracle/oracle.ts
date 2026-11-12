@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { type Bytes, hex } from "../../web/js/bytes.js";
+import type { Inspect } from "../../web/js/goengine.js";
 
 export interface OraclePolicy {
   error?: string;
@@ -41,6 +42,8 @@ export interface Oracle {
   variant: string;
   parsePolicy(text: string): OraclePolicy;
   verifyCheckpoint(policy: string, checkpoint: string): OracleCheckpoint;
+  /** What the page's Go engine is given: the verdict and every signature line (goengine.ts). */
+  inspectCheckpoint: Inspect;
   parseProof(text: string): OracleProof;
   formatProof(proof: { index: number; hashes: string[]; checkpoint: string }): string;
   /** The tree head of the first `size` leaf hashes and, for index >= 0, that leaf's inclusion proof. */
@@ -67,6 +70,7 @@ export async function loadOracle(): Promise<Oracle> {
     variant,
     parsePolicy: (text) => call("oracleParsePolicy", text),
     verifyCheckpoint: (policy, checkpoint) => call("oracleVerifyCheckpoint", { policy, checkpoint }),
+    inspectCheckpoint: (policy, checkpoint) => call("oracleInspectCheckpoint", { policy, checkpoint }),
     parseProof: (text) => call("oracleParseProof", text),
     formatProof: (proof) => call("oracleFormatProof", proof),
     tree: (leafHashes, size, index) => call("oracleTree", { leaves: hex(leafHashes.subarray(0, size * 32)), size, index }),

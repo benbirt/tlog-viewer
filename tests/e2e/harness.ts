@@ -11,7 +11,7 @@ import type { TestLog, World } from "./testlog.js";
 
 export const SITE = "https://viewer.test/";
 const siteDir = fileURLToPath(new URL("../../site/", import.meta.url));
-const TYPES: Record<string, string> = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css" };
+const TYPES: Record<string, string> = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".wasm": "application/wasm" };
 
 /** Finds Chrome: $CHROME_BIN, else the usual names on $PATH and in the usual places. */
 function chromePath(): string {
