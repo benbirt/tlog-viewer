@@ -111,6 +111,26 @@ ML-DSA-44 needs a recent browser (Chrome 157 is known to work). Where WebCrypto
 lacks it, those signatures are reported as not checked and the quorum is
 evaluated on the remaining ones.
 
+## Agreement with the Go implementations
+
+The transparency formats have no established JavaScript library, so the page
+implements them. To hold that implementation to the Go ones, `//oracle` wraps
+[transparency-dev/formats](https://github.com/transparency-dev/formats) (policies,
+checkpoints, cosignatures, proofs) and `golang.org/x/mod/sumdb/tlog` (the Merkle
+tree) and compiles them to WebAssembly, and `tests/oracle` runs both over the
+same input: real and purpose-signed checkpoints, hand-made awkward cases, and
+thousands of seeded mutations of each.
+
+The rule tested is that the page never accepts what the Go code rejects. Where
+the page is stricter on purpose, the reason is named in the test and counted:
+repeated signature lines, empty extension lines, vkeys whose key ID is not the
+one their name and key imply, relative URLs, and proofs in any form but the one
+the page writes. Any other disagreement fails the build.
+
+The oracle is built twice from the same source, by the Go compiler (5.8 MB) and
+by TinyGo (1.5 MB), and the tests run against each. It is used only by tests;
+nothing of it is in the site.
+
 ## Checking the deployed site
 
 The page asks to be trusted as a verifier, so it says what it is: the footer
@@ -137,7 +157,8 @@ once CI passes:
 | `.bazelversion` | `update-pins.yaml` | daily |
 | Bazel modules (`bazel_dep` versions) | `update-pins.yaml` | daily |
 | Node, within its major version | `update-pins.yaml` | daily |
-| npm packages, GitHub Actions | Dependabot, merged by `dependabot-auto-merge.yaml` | weekly |
+| TinyGo | `update-pins.yaml` | daily |
+| npm packages, Go modules, GitHub Actions | Dependabot, merged by `dependabot-auto-merge.yaml` | weekly |
 
 `pages.yaml` deploys on every push to `main`, which includes those merges.
 

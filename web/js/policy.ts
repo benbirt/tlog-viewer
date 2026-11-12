@@ -67,6 +67,13 @@ export function parseVKey(text: string): VKey {
   return { text, name, keyId: parseInt(idHex, 16), alg: raw[0]!, key: raw.subarray(1) };
 }
 
+/** Accepts the optional URL of a log or witness line if it is an absolute http(s) URL. */
+function checkUrl(url: string | undefined, fail: (msg: string) => never): string | null {
+  if (url === undefined) return null;
+  if (!/^https?:\/\//.test(url) || /%(?![0-9A-Fa-f]{2})/.test(url) || !URL.canParse(url)) fail(`not an absolute http(s) URL: ${url}`);
+  return url;
+}
+
 export function parsePolicy(text: string): Policy {
   // The only control characters a policy may contain are tab and newline.
   if (/[\x00-\x08\x0b-\x1f\x7f]/.test(text)) throw new Error("policy contains a control character");
@@ -78,6 +85,8 @@ export function parsePolicy(text: string): Policy {
   // Two vkeys wrapping the same public key are duplicates, whatever their names.
   const logKeys = new Set<string>();
   const witnessKeys = new Set<string>();
+  // Names already listed as a member of some group.
+  const grouped = new Set<string>();
 
   text.split("\n").forEach((line, i) => {
     const fields = line.split(/[ \t]+/).filter((f) => f !== "");
@@ -98,7 +107,7 @@ export function parsePolicy(text: string): Policy {
         const parsed = parseVKey(vkey);
         if (logKeys.has(hex(parsed.key))) fail(`duplicate log public key ${parsed.name}`);
         logKeys.add(hex(parsed.key));
-        logs.push({ vkey: parsed, url: url ?? null });
+        logs.push({ vkey: parsed, url: checkUrl(url, fail) });
         break;
       }
       case "witness": {
@@ -111,22 +120,26 @@ export function parsePolicy(text: string): Policy {
         }
         if (witnessKeys.has(hex(vkey.key))) fail(`duplicate witness public key ${name}`);
         witnessKeys.add(hex(vkey.key));
-        witnesses.push({ name, vkey, url: url ?? null });
+        witnesses.push({ name, vkey, url: checkUrl(url, fail) });
         break;
       }
       case "group": {
         const [name, thresholdText, ...members] = args;
         if (name === undefined || thresholdText === undefined || members.length === 0) return fail("malformed group line");
-        if (new Set(members).size !== members.length) fail(`group ${name} repeats a member`);
-        for (const m of members) {
-          if (!names.has(m)) fail(`group ${name} references undefined ${m}`);
-        }
+        if (name === "none") fail('"none" is reserved');
+        if (names.has(name)) fail(`duplicate name ${name}`);
         let threshold: number;
         if (thresholdText === "any") threshold = 1;
         else if (thresholdText === "all") threshold = members.length;
-        else if (/^[1-9][0-9]*$/.test(thresholdText)) threshold = Number(thresholdText);
+        else if (/^[0-9]+$/.test(thresholdText) && Number(thresholdText) < 2 ** 31) threshold = Number(thresholdText);
         else return fail(`bad threshold ${thresholdText}`);
-        if (threshold > members.length) fail("threshold exceeds group size");
+        if (threshold < 1 || threshold > members.length) fail(`threshold ${threshold} is outside 1 to ${members.length}`);
+        for (const m of members) {
+          if (!names.has(m)) fail(`group ${name} references undefined ${m}`);
+          // Across the whole policy, not just this group: the groups form a tree.
+          if (grouped.has(m)) fail(`${m} is a member of more than one group, or of one group twice`);
+          grouped.add(m);
+        }
         define(name);
         groups.push({ name, threshold, members });
         break;
