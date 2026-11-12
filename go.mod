@@ -4,7 +4,7 @@ go 1.26.5
 
 require (
 	github.com/transparency-dev/formats v0.1.2-0.20260817204002-294658dba388
-	golang.org/x/mod v0.40.0
+	golang.org/x/mod v0.42.0
 )
 
 require (
