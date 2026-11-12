@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import type { Bytes } from "../web/js/bytes.js";
 import { decodeEntry } from "../web/js/entry.js";
-import { type Fault, faultById, FAULTS, faultTargets, faultyFetch } from "../web/js/faults.js";
+import { type Fault, faultById, FAULTS, faultTargets } from "../web/js/faults.js";
 import { LogClient } from "../web/js/tiles.js";
 import { siteVerifier } from "../tools/wasm.js";
 
@@ -54,21 +54,22 @@ test("checkpoint faults produce the failures they describe", async () => {
   assert.equal(noQuorum.signatures.filter((s) => s.role === "witness").length, 1);
 });
 
-test("tile faults are applied by the fetch wrapper", async () => {
+test("checkpoint and tile faults are applied by the log client", async () => {
   const served: Record<string, Bytes | string> = {
     "https://log.example/checkpoint": raw,
     "https://log.example/tile/0/000": tile0,
     "https://log.example/tile/entries/000.p/7": bundle,
   };
   const inner = async (url: string) => (served[url] !== undefined ? new Response(served[url]) : new Response("no", { status: 404 }));
-  const client = (id: string) => new LogClient("https://log.example/", faultyFetch(fault(id), "https://log.example/", inner));
+  const client = (id: string) => new LogClient("https://log.example/", inner, undefined, fault(id));
 
-  const altered = await client("leaf-hashes").hashTile({ path: "tile/0/000", width: 256 });
+  const tile = { index: 0, width: 256, first: 0, path: "tile/0/000", entries: "tile/entries/000.p/7" };
+  const altered = await client("leaf-hashes").hashTile(tile);
   assert.equal(altered[0], tile0[0]! ^ 1);
   assert.deepEqual(altered.subarray(1), tile0.subarray(1));
 
-  await assert.rejects(client("tile-unavailable").bytes("tile/entries/000.p/7"), /HTTP 503/);
-  assert.equal((await client("tile-unavailable").hashTile({ path: "tile/0/000", width: 256 }))[0], tile0[0]);
+  await assert.rejects(client("tile-unavailable").entryBundle(tile), /HTTP 503/);
+  assert.equal((await client("tile-unavailable").hashTile(tile))[0], tile0[0]);
   assert.notEqual(await client("log-signature").checkpoint("checkpoint"), raw);
   assert.equal(await client("leaf-hashes").checkpoint("checkpoint"), raw);
 });

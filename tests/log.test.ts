@@ -75,11 +75,11 @@ test("LogClient checks tile sizes and reports HTTP errors", async () => {
   const served: Record<string, Bytes> = { "https://log.example/tile/entries/000.p/7": bundle, "https://log.example/tile/0/000": tile0 };
   const client = new LogClient("https://log.example/", async (url) =>
     served[url] ? new Response(served[url]) : new Response("no", { status: 404 }));
-  assert.equal((await client.bytes("tile/entries/000.p/7")).length, bundle.length);
-  assert.equal((await client.hashTile({ path: "tile/0/000", width: 256 })).length, 8192);
-  await assert.rejects(client.hashTile({ path: "tile/0/000", width: 255 }), /wrong size/);
-  await assert.rejects(client.hashTile({ path: "tile/1/000", width: 1 }), (e) => e instanceof HttpError && e.url.endsWith("/tile/1/000"));
-  await assert.rejects(client.bytes("tile/0/001.p/3"), (e) => e instanceof HttpError && e.status === 404);
+  assert.equal((await client.entryBundle(firstTile)).length, bundle.length);
+  assert.equal((await client.hashTile({ path: "tile/0/000", width: 256, index: 0 })).length, 8192);
+  await assert.rejects(client.hashTile({ path: "tile/0/000", width: 255, index: 0 }), /wrong size/);
+  await assert.rejects(client.hashTile({ path: "tile/1/000", width: 1, index: 0, level: 1 }), (e) => e instanceof HttpError && e.url.endsWith("/tile/1/000"));
+  await assert.rejects(client.hashTile({ path: "tile/0/001.p/3", width: 3, index: 1 }), (e) => e instanceof HttpError && e.status === 404);
 });
 
 test("decodes and verifies real endorsement entries", async () => {
