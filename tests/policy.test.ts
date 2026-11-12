@@ -63,3 +63,22 @@ test("rejects duplicate public keys and control characters", () => {
   assert.throws(() => parsePolicy(`log l1+00000000+A${key.slice(1)}\nlog l2+11111111+A${key.slice(1)}\nquorum none\n`), /duplicate log public key/);
   assert.throws(() => parsePolicy(`quorum none\r\n`), /control character/);
 });
+
+test("groups form a tree, thresholds are plain numbers, and URLs are absolute", () => {
+  const a = "witness a w+00000000+BAAA";
+  const b = "witness b x+00000000+BAAB";
+  // A name may be a member of only one group in the whole policy.
+  assert.throws(() => parsePolicy(`${a}\ngroup g any a\ngroup h any a\nquorum h\n`), /member of more than one group/);
+  assert.throws(() => parsePolicy(`${a}\n${b}\ngroup g any a b\ngroup h all g b\nquorum h\n`), /member of more than one group/);
+  assert.throws(() => parsePolicy(`${a}\ngroup g any a a\nquorum g\n`), /member of more than one group/);
+  assert.equal(parsePolicy(`${a}\n${b}\ngroup g any a\ngroup h all g b\nquorum h\n`).groups.length, 2);
+  // Thresholds are read as Go reads them: leading zeros allowed, within 1 to the group's size.
+  assert.equal(parsePolicy(`${a}\ngroup g 01 a\nquorum g\n`).groups[0]?.threshold, 1);
+  for (const bad of ["0", "2", "-1", "+1", "1.0", "one", "99999999999"]) {
+    assert.throws(() => parsePolicy(`${a}\ngroup g ${bad} a\nquorum g\n`), /threshold/, bad);
+  }
+  assert.equal(parsePolicy(`${a} https://witness.example/path\nquorum a\n`).witnesses[0]?.url, "https://witness.example/path");
+  for (const bad of ["witness.example", "/relative", "ftp://witness.example", "https://example.com/%zz", "http://[::1"]) {
+    assert.throws(() => parsePolicy(`${a} ${bad}\nquorum a\n`), /not an absolute http\(s\) URL/, bad);
+  }
+});

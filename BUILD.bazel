@@ -38,6 +38,7 @@ ts_project(
     srcs = glob([
         "tests/*.ts",
         "tests/e2e/*.ts",
+        "tests/oracle/*.ts",
         "tools/*.ts",
     ]),
     declaration = True,
@@ -193,3 +194,33 @@ js_test(
         "HOME": "/tmp",
     },
 )
+
+exports_files([
+    "go.mod",
+    "go.sum",
+])
+
+# The TypeScript verifier against the Go implementations of the same formats
+# (//oracle), once for each compiler the oracle is built with.
+[
+    js_test(
+        name = "oracle_%s_test" % variant,
+        size = "medium",
+        data = NODE_RUNTIME + glob(["tests/testdata/**"]) + [
+            ":build_info",
+            ":policy_data",
+            "//oracle:%s_wasm_exec" % variant,
+            "//oracle:oracle_%s" % variant,
+        ],
+        entry_point = "tests/oracle/differential.js",
+        env = {
+            "ORACLE_EXEC": "$(rootpath //oracle:%s_wasm_exec)" % variant,
+            "ORACLE_VARIANT": variant,
+            "ORACLE_WASM": "$(rootpath //oracle:oracle_%s)" % variant,
+        },
+    )
+    for variant in [
+        "go",
+        "tinygo",
+    ]
+]

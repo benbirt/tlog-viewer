@@ -2,7 +2,7 @@ name: Update pins
 
 # Advances the versions that Dependabot cannot: the google-tlog-witness commit
 # that the trust policy is built from, the Bazel version, the Bazel modules,
-# and the Node version. Each gets its own pull request, set to merge automatically once CI
+# the Node version and the TinyGo release. Each gets its own pull request, set to merge automatically once CI
 # passes.
 #
 # The first is what brings new log instances, witnesses and key rotations to
@@ -27,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pin: [policy, bazel, modules, node]
+        pin: [policy, bazel, modules, node, tinygo]
     concurrency:
       group: update-pins-${{ matrix.pin }}
     env:
@@ -107,6 +107,30 @@ jobs:
           {
             echo "TITLE=Update Node to $new"
             echo "BODY=Node $old to $new, the newest $major.x that rules_nodejs $rules can fetch."
+          } >> "$GITHUB_ENV"
+
+      # TinyGo builds one of the two test oracles (//oracle). Its release is
+      # pinned by checksum, which has to be computed from the download.
+      - name: Update TinyGo
+        if: matrix.pin == 'tinygo'
+        run: |
+          new=$(gh api repos/tinygo-org/tinygo/releases/latest --jq .tag_name)
+          new=${new#v}
+          [[ "$new" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::unexpected TinyGo release '$new'"; exit 1; }
+          old=$(sed -n -E 's|.*/download/v([0-9.]+)/tinygo.*|\1|p' MODULE.bazel)
+          [[ -n "$old" ]] || { echo "::error::no TinyGo pin in MODULE.bazel"; exit 1; }
+          if [ "$new" != "$old" ] && [ "$(printf '%s\n' "$old" "$new" | sort -V | tail -n 1)" = "$new" ]; then
+            url="https://github.com/tinygo-org/tinygo/releases/download/v$new/tinygo$new.linux-amd64.tar.gz"
+            sha=$(curl -fsSL "$url" | sha256sum | cut -d' ' -f1)
+            [[ "$sha" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::could not download $url"; exit 1; }
+            sed -i -E '/name = "tinygo_linux_amd64"/,/^    url = / {
+              s|sha256 = "[0-9a-f]{64}"|sha256 = "'"$sha"'"|
+              s|/download/v[0-9.]+/tinygo[0-9.]+\.linux-amd64|/download/v'"$new"'/tinygo'"$new"'.linux-amd64|
+            }' MODULE.bazel
+          fi
+          {
+            echo "TITLE=Update TinyGo to $new"
+            echo "BODY=https://github.com/tinygo-org/tinygo/releases/tag/v$new"
           } >> "$GITHUB_ENV"
 
       - name: Check for changes
