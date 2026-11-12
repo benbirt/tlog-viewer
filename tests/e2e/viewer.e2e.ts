@@ -406,3 +406,70 @@ viewerTest("claims are titled from the documents they link to, where those can b
   assert.match(await v.text("#detail-body"), /Titles are the headings of the linked documents, fetched from GitHub\. They are not part of the log\./);
   assert.equal(await v.page.locator("ul.claims a").count(), 3);
 });
+
+// The prototype Go engine: checkpoints verified by the Go implementation,
+// running in the page as WebAssembly.
+const GO = "&engine=go";
+
+viewerTest("with engine=go, the Go implementation verifies the checkpoint", async (v) => {
+  await v.goto("#log=test.example/log/0" + GO);
+  assert.equal(await v.outcome(), "ok ok ok ok");
+  const s = await v.steps();
+  assert.match(s.log.text, /Signed by the log \(Ed25519 \+ ML-DSA-44\)\. Verified by the Go implementation \(WebAssembly\)\./);
+  assert.match(s.quorum.text, /3 valid cosignatures; 3 of 3 in “two-of-three”, 2 required\. Witnessed/);
+  assert.equal(await v.text("#count"), "300 entries");
+  // The choice is in the address and survives navigation within the page.
+  await v.page.locator("#rows .row a").first().click();
+  await v.drawer(true);
+  assert.equal(new URLSearchParams((await v.hash()).slice(1)).get("engine"), "go");
+
+  // Without it, the module is not even fetched.
+  const plain = await Viewer.open(browser, world);
+  try {
+    const wasm: string[] = [];
+    plain.page.on("request", (r) => { if (r.url().endsWith(".wasm")) wasm.push(r.url()); });
+    await plain.goto();
+    assert.doesNotMatch((await plain.steps()).log.text, /Go implementation/);
+    assert.deepEqual(wasm, []);
+  } finally {
+    await plain.close();
+  }
+});
+
+for (const fault of FAULTS) {
+  viewerTest(`with engine=go, simulated failure: ${fault.title}`, async (v) => {
+    await v.goto(`#log=test.example/log/0&fault=${fault.id}${GO}`);
+    const [outcome, failedRows] = FAULT_OUTCOMES[fault.id]!;
+    assert.equal(await v.outcome(), outcome);
+    assert.equal(await v.page.locator("#rows .badge.bad").count(), failedRows);
+  });
+}
+
+viewerTest("with engine=go, a growing log is followed and a broken one is caught", async (v, w) => {
+  await v.page.clock.install();
+  await v.goto("#log=test.example/log/0" + GO);
+  await w.main.append(20);
+  await v.serve(w.main);
+  await nextCheck(v);
+  assert.equal(await v.outcome(), "ok ok ok ok");
+  assert.equal(await v.text("#count"), "320 entries");
+
+  await w.main.append(1);
+  await v.serve(w.main, { witnesses: 1 });
+  await v.page.clock.fastForward(61_000);
+  await v.page.waitForFunction(() => document.querySelector<HTMLElement>("#step-quorum")!.dataset.state === "fail");
+  assert.equal(await v.outcome(), "ok fail none none");
+});
+
+viewerTest("the debug menu switches between the two verifiers", async (v) => {
+  await v.goto();
+  await v.page.click("#debug > summary");
+  await v.page.locator("#engine-choice a", { hasText: "Go implementation" }).click();
+  await v.page.waitForFunction(() => location.hash.includes("engine=go"));
+  await v.settled();
+  assert.match((await v.steps()).log.text, /Verified by the Go implementation/);
+  await v.page.locator("#engine-choice a", { hasText: "TypeScript" }).click();
+  await v.page.waitForFunction(() => !location.hash.includes("engine=go"));
+  await v.settled();
+  assert.doesNotMatch((await v.steps()).log.text, /Go implementation/);
+});

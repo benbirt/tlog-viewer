@@ -14,6 +14,7 @@ go_library(
     visibility = ["//visibility:private"],
     deps = [
         "@com_github_transparency_dev_formats//log",
+        "@com_github_transparency_dev_formats//note",
         "@com_github_transparency_dev_formats//policy",
         "@com_github_transparency_dev_formats//proof",
         "@org_golang_x_mod//sumdb/note",

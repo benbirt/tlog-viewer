@@ -1,0 +1,24 @@
+oracle_tinygo.wasm is built from oracle/main.go in
+https://github.com/benbirt/tlog-viewer (MIT) and contains code from the
+following projects, under their own licences. The exact versions are those
+pinned in go.mod and MODULE.bazel at the commit named in the page's footer.
+
+  github.com/transparency-dev/formats   Apache License 2.0
+    https://github.com/transparency-dev/formats/blob/main/LICENSE
+  golang.org/x/mod                      BSD 3-Clause
+    https://cs.opensource.google/go/x/mod/+/master:LICENSE
+  golang.org/x/crypto                   BSD 3-Clause
+    https://cs.opensource.google/go/x/crypto/+/master:LICENSE
+  filippo.io/mldsa                      BSD 3-Clause
+    https://github.com/FiloSottile/mldsa/blob/main/LICENSE
+  The Go standard library               BSD 3-Clause
+    https://go.dev/LICENSE
+  The TinyGo runtime                    BSD 3-Clause
+    https://github.com/tinygo-org/tinygo/blob/release/LICENSE
+
+tinygo_wasm_exec.js is from TinyGo, adapted there from the Go project's
+wasm_exec.js, and is under the same BSD 3-Clause licences.
+
+This list is written by hand while the WebAssembly verifier is a prototype.
+Before it becomes the default it should be generated from the build, with the
+licence texts included, as third-party-licenses.txt is for the JavaScript.
