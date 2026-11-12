@@ -12,8 +12,9 @@ import { verifyInteriorTiles } from "./interior.js";
 import { BUILD } from "./build_info.js";
 import { POLICY_SOURCE, POLICY_TEXT } from "./policy_data.js";
 import { WorkerPool } from "./pool.js";
-import { HttpError, LogClient, TILE_WIDTH, tilePath, type TileRef, tilesForSize } from "./tiles.js";
-import { type CheckpointResult, type QuorumNode, type SignatureResult, startVerifier } from "./verifier.js";
+import { compileVerifier } from "./gowasm.js";
+import { HttpError, LogClient } from "./tiles.js";
+import { type CheckpointResult, type QuorumNode, type SignatureResult, startVerifier, type TileRef } from "./verifier.js";
 
 const DEFAULT_PAGE_SIZE = 50;
 /** A checkpoint last witnessed longer ago than this draws a warning. */
@@ -21,7 +22,8 @@ const STALE_AFTER_SECONDS = 24 * 60 * 60;
 // Everything to do with transparency formats is done by the verifier: the Go
 // implementations, running as WebAssembly in a worker. If it cannot start, or
 // cannot read the policy compiled into the page, there is nothing to show.
-const verifier = startVerifier();
+const verifierModule = compileVerifier();
+const verifier = startVerifier(verifierModule);
 const policy = await verifier.policy(POLICY_TEXT).catch((e: unknown) => {
   const message = `This page cannot verify anything: ${e instanceof Error ? e.message : String(e)}`;
   const el = document.getElementById("notice");
@@ -34,6 +36,8 @@ const policy = await verifier.policy(POLICY_TEXT).catch((e: unknown) => {
 /** What to call a checkpoint that passed: witnesses are only involved if the policy asks for them. */
 const checkpointWord = policy.quorum === "none" ? "verified" : "witnessed";
 const origins = policy.origins;
+/** Where a log serves its checkpoint, relative to its URL. */
+const checkpointPath = (await verifier.layout(0, 0)).checkpoint;
 
 type Entry = CheckedEntry;
 
@@ -50,6 +54,8 @@ interface LogState {
   size: number;
   /** Set once the leaf hashes have been shown to hash to the checkpoint. */
   leafHashes: Bytes | null;
+  /** The tiles of the tree as verified, and with them its entry bundles. */
+  tiles: TileRef[];
   entries: (Entry | undefined)[];
   loaded: number;
   failures: { leaf: number; parse: number; contentHash: number; signature: number; unchecked: number };
@@ -295,10 +301,11 @@ async function load(origin: string, attempt = 0): Promise<void> {
     origin,
     fault: fault?.id ?? null,
     abort,
-    workers: new WorkerPool(),
+    workers: new WorkerPool(verifierModule),
     client: new LogClient(base, fault ? faultyFetch(fault, base) : undefined, abort.signal),
     size: 0,
     leafHashes: null,
+    tiles: [],
     entries: [],
     loaded: 0,
     failures: { leaf: 0, parse: 0, contentHash: 0, signature: 0, unchecked: 0 },
@@ -362,11 +369,14 @@ async function load(origin: string, attempt = 0): Promise<void> {
 
     // 3: every leaf hash, from the level-0 tiles, must hash up to the
     // checkpoint's root. This binds the whole log, not just one entry.
-    const tiles = tilesForSize(cp.size);
+    setStep("step-root", "busy", "Fetching leaf-hash tiles…");
+    const { tiles } = await verifier.layout(0, cp.size);
+    if (!live()) return;
+    s.tiles = tiles;
     setStep("step-root", "busy", `Fetching ${tiles.length} leaf-hash tile${tiles.length === 1 ? "" : "s"}…`);
     const leafHashes = new Uint8Array(cp.size * 32);
     await pool(tiles, 6, async (t) => {
-      if (live()) leafHashes.set(await s.client.hashTile(t), t.index * TILE_WIDTH * 32);
+      if (live()) leafHashes.set(await s.client.hashTile(t), t.first * 32);
     });
     if (!live()) return;
     const { root, interior: expected } = await verifier.tree(leafHashes, cp.size);
@@ -423,7 +433,7 @@ function skipSteps(from: number): void {
 function fetchCheckpoint(s: LogState): Promise<string> {
   // The "wrong log" simulation serves a different log's checkpoint.
   const other = faultById(s.fault)?.checkpointFromOtherLog ? origins.find((o) => o !== s.origin) : undefined;
-  return (other ? new LogClient(logBaseUrl(other), undefined, s.abort.signal) : s.client).checkpoint();
+  return (other ? new LogClient(logBaseUrl(other), undefined, s.abort.signal) : s.client).checkpoint(checkpointPath);
 }
 
 function verifyFetched(s: LogState, raw: string): Promise<CheckpointResult> {
@@ -502,11 +512,10 @@ function showRootStep(size: number, interior: { checked: number; mismatched: str
 async function ingestBundle(s: LogState, t: TileRef, from: number): Promise<void> {
   const live = () => state === s;
   if (!live() || !s.leafHashes) return;
-  const start = t.index * TILE_WIDTH;
   // The fetching, hashing and signature checking happen in a worker.
   const entries = await s.workers.bundle({
     base: s.client.base, fault: s.fault, tile: t, from, size: s.size,
-    tileLeafHashes: s.leafHashes.slice(start * 32, (start + t.width) * 32),
+    tileLeafHashes: s.leafHashes.slice(t.first * 32, (t.first + t.width) * 32),
   });
   // Once loading has failed, bundles still in flight must not revive it.
   if (!live() || s.failed) return;
@@ -616,7 +625,9 @@ async function refresh(): Promise<void> {
       return markChecked(true);
     }
 
-    const growth = await extendLeafHashes(s.client, s.leafHashes, old.size, cp.size);
+    const { tiles: changed } = await verifier.layout(old.size, cp.size);
+    if (!live()) return;
+    const growth = await extendLeafHashes(s.client, changed, s.leafHashes, old.size, cp.size);
     if (!live()) return;
     if (growth.kind === "rewritten") {
       return reportInconsistency(s, `The log now serves a different leaf hash for entry ${count(growth.index)}, which it had already published.`);
@@ -627,6 +638,7 @@ async function refresh(): Promise<void> {
       return reportInconsistency(s, `The new tree of size ${count(cp.size)} does not extend the earlier ${count(old.size)}-entry tree: keeping earlier leaf hashes gives Merkle root ${b64Encode(root)}, but the new checkpoint says ${b64Encode(cp.hash)}.`);
     }
     const interior = await verifyInteriorTiles(s.client, expected);
+    const { tiles: all } = await verifier.layout(0, cp.size);
     if (!live()) return;
 
     // Verified: take up the new tree, then fetch the entries added to it.
@@ -634,6 +646,7 @@ async function refresh(): Promise<void> {
     s.done = false;
     s.size = cp.size;
     s.leafHashes = growth.leafHashes;
+    s.tiles = all;
     s.entries.length = cp.size;
     s.checkpointRaw = raw;
     s.result = result;
@@ -642,7 +655,7 @@ async function refresh(): Promise<void> {
     showRootStep(cp.size, interior);
     updateEntriesStep(s);
     applyFilter();
-    await pool(tilesForSize(cp.size).slice(Math.floor(old.size / TILE_WIDTH)), 4, (t) => ingestBundle(s, t, old.size));
+    await pool(changed, 4, (t) => ingestBundle(s, t, old.size));
     if (!live()) return;
     s.done = true;
     updateEntriesStep(s);
@@ -995,9 +1008,8 @@ function detailSections(s: LogState, e: Entry): HTMLElement[] {
       : e.keyPem
         ? "The signature could not be checked: the key is not ECDSA P-256."
         : "The signature was not checked: the entry could not be decoded.";
-  const bundleIndex = Math.floor(e.index / TILE_WIDTH);
-  const bundleWidth = Math.min(TILE_WIDTH, s.size - bundleIndex * TILE_WIDTH);
-  const bundleUrl = s.client.url(tilePath("entries", bundleIndex, bundleWidth));
+  const bundle = s.tiles.find((t) => e.index >= t.first && e.index < t.first + t.width);
+  const bundleUrl = bundle ? s.client.url(bundle.entries) : null;
 
   const sections = [
     h("section", null, h("h3", null, "Verification"), h("ul", { class: "checks" },
@@ -1043,7 +1055,7 @@ function detailSections(s: LogState, e: Entry): HTMLElement[] {
     h("section", null, h("h3", null, "Log position"), kv([
       ["Leaf index", String(e.index)],
       ["Leaf hash", mono(hex(e.leafHash))],
-      ["Entry bundle", link(bundleUrl)],
+      ["Entry bundle", bundleUrl ? link(bundleUrl) : "—"],
       ["Proof", proofControl(s, e)],
     ])),
   );

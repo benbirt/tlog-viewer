@@ -4,8 +4,7 @@ import test from "node:test";
 import type { Bytes } from "../web/js/bytes.js";
 import { decodeEntry } from "../web/js/entry.js";
 import { type Fault, faultById, FAULTS, faultTargets, faultyFetch } from "../web/js/faults.js";
-import { leafHash } from "../web/js/ingest.js";
-import { LogClient, parseBundle } from "../web/js/tiles.js";
+import { LogClient } from "../web/js/tiles.js";
 import { siteVerifier } from "../tools/wasm.js";
 
 const file = (f: string) => readFileSync(new URL("testdata/" + f, import.meta.url));
@@ -64,18 +63,18 @@ test("tile faults are applied by the fetch wrapper", async () => {
   const inner = async (url: string) => (served[url] !== undefined ? new Response(served[url]) : new Response("no", { status: 404 }));
   const client = (id: string) => new LogClient("https://log.example/", faultyFetch(fault(id), "https://log.example/", inner));
 
-  const altered = await client("leaf-hashes").hashTile({ index: 0, width: 256 });
+  const altered = await client("leaf-hashes").hashTile({ path: "tile/0/000", width: 256 });
   assert.equal(altered[0], tile0[0]! ^ 1);
   assert.deepEqual(altered.subarray(1), tile0.subarray(1));
 
-  await assert.rejects(client("tile-unavailable").entryBundle({ index: 0, width: 7 }), /HTTP 503/);
-  assert.equal((await client("tile-unavailable").hashTile({ index: 0, width: 256 }))[0], tile0[0]);
-  assert.notEqual(await client("log-signature").checkpoint(), raw);
-  assert.equal(await client("leaf-hashes").checkpoint(), raw);
+  await assert.rejects(client("tile-unavailable").bytes("tile/entries/000.p/7"), /HTTP 503/);
+  assert.equal((await client("tile-unavailable").hashTile({ path: "tile/0/000", width: 256 }))[0], tile0[0]);
+  assert.notEqual(await client("log-signature").checkpoint("checkpoint"), raw);
+  assert.equal(await client("leaf-hashes").checkpoint("checkpoint"), raw);
 });
 
 test("entry faults produce the failures they describe", async () => {
-  const entry = parseBundle(bundle)[0]!;
+  const entry = (await verifier.splitBundle(bundle))[0]!;
   const decode = (id: string) => decodeEntry(fault(id).entry!(entry));
 
   assert.deepEqual((await decode("entry-signature")).checks, { contentHash: true, signature: false });
@@ -91,5 +90,5 @@ test("entry faults produce the failures they describe", async () => {
   // The "served" fault leaves the entry itself intact but changes its leaf hash.
   const swapped = fault("entry-swapped").entry!(entry);
   assert.deepEqual((await decodeEntry(swapped)).checks, { contentHash: true, signature: true });
-  assert.notDeepEqual(await leafHash(swapped), await leafHash(entry));
+  assert.notDeepEqual(await verifier.leafHash(swapped), await verifier.leafHash(entry));
 });

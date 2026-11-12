@@ -8,7 +8,8 @@
 //
 // What is written here is only the questions the page asks of them and the
 // shape of the answers. Each exported function takes a JSON string, or bytes
-// and numbers where the input is large, and returns a JSON string.
+// and numbers where the input is large, and returns a JSON string, or bytes
+// where that is what was asked for.
 package main
 
 import (
@@ -27,6 +28,8 @@ import (
 	f_note "github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/formats/policy"
 	"github.com/transparency-dev/formats/proof"
+	"github.com/transparency-dev/tessera/api"
+	"github.com/transparency-dev/tessera/api/layout"
 	"golang.org/x/mod/sumdb/note"
 	"golang.org/x/mod/sumdb/tlog"
 )
@@ -351,6 +354,64 @@ func verifyCheckpoint(in checkpointIn) checkpointOut {
 }
 
 // ---------------------------------------------------------------------------
+// Where a log keeps things (c2sp.org/tlog-tiles)
+
+// tileRef is a level-0 tile of a log and the entry bundle beside it.
+type tileRef struct {
+	Index uint64 `json:"index"`
+	// Width is the number of hashes in the tile, and of entries in the bundle.
+	Width uint `json:"width"`
+	// First is the index in the log of the tile's first leaf.
+	First uint64 `json:"first"`
+	// Path and Entries are where the tile and its entry bundle are served,
+	// relative to the log's URL.
+	Path    string `json:"path"`
+	Entries string `json:"entries"`
+}
+
+type layoutIn struct {
+	// From and Size are tree sizes: the leaves wanted are those from From up
+	// to Size.
+	From uint64 `json:"from"`
+	Size uint64 `json:"size"`
+}
+
+type layoutOut struct {
+	// Checkpoint is where the log serves its checkpoint.
+	Checkpoint string `json:"checkpoint"`
+	// Tiles are those holding the leaves wanted, in order. The first also
+	// holds earlier leaves unless From is the start of a tile.
+	Tiles []tileRef `json:"tiles"`
+}
+
+func tileLayout(in layoutIn) layoutOut {
+	out := layoutOut{Checkpoint: layout.CheckpointPath, Tiles: []tileRef{}}
+	if in.From >= in.Size {
+		return out
+	}
+	for r := range layout.Range(in.From, in.Size-in.From, in.Size) {
+		width := uint(r.Partial)
+		if width == 0 {
+			width = layout.TileWidth
+		}
+		out.Tiles = append(out.Tiles, tileRef{
+			Index: r.Index, Width: width, First: r.Index * layout.TileWidth,
+			Path: layout.TilePath(0, r.Index, r.Partial), Entries: layout.EntriesPath(r.Index, r.Partial),
+		})
+	}
+	return out
+}
+
+// splitBundle returns the entries of an entry bundle.
+func splitBundle(raw []byte) ([][]byte, error) {
+	var b api.EntryBundle
+	if err := b.UnmarshalText(raw); err != nil {
+		return nil, err
+	}
+	return b.Entries, nil
+}
+
+// ---------------------------------------------------------------------------
 // The Merkle tree
 
 // stored is tlog's stored-hash sequence for a tree, built from leaf hashes.
@@ -384,14 +445,13 @@ func storedHashes(leaves []byte, size int64) (stored, error) {
 	return s, nil
 }
 
-// The height of a tile in tlog-tiles: 2^8 hashes wide.
-const tileHeight = 8
-
 type tileOut struct {
 	Level int    `json:"level"`
 	Index int64  `json:"index"`
 	Width int    `json:"width"`
 	Data  string `json:"data"` // hex
+	// Path is where the log serves the tile, relative to its URL.
+	Path string `json:"path"`
 }
 
 type treeOut struct {
@@ -417,7 +477,7 @@ func tree(leaves []byte, size int64) treeOut {
 		root = tlog.Hash(sha256.Sum256(nil))
 	}
 	out := treeOut{Root: base64.StdEncoding.EncodeToString(root[:]), Interior: []tileOut{}}
-	for _, t := range tlog.NewTiles(tileHeight, 0, size) {
+	for _, t := range tlog.NewTiles(layout.TileHeight, 0, size) {
 		if t.L < 1 {
 			continue
 		}
@@ -425,7 +485,14 @@ func tree(leaves []byte, size int64) treeOut {
 		if err != nil {
 			return treeOut{Error: err.Error()}
 		}
-		out.Interior = append(out.Interior, tileOut{Level: t.L, Index: t.N, Width: t.W, Data: hex.EncodeToString(data)})
+		partial := uint8(0)
+		if t.W < layout.TileWidth {
+			partial = uint8(t.W)
+		}
+		out.Interior = append(out.Interior, tileOut{
+			Level: t.L, Index: t.N, Width: t.W, Data: hex.EncodeToString(data),
+			Path: layout.TilePath(uint64(t.L), uint64(t.N), partial),
+		})
 	}
 	return out
 }
@@ -530,6 +597,13 @@ func bytesArg(v js.Value) []byte {
 	return b
 }
 
+// bytesValue copies bytes into a new Uint8Array.
+func bytesValue(b []byte) js.Value {
+	v := js.Global().Get("Uint8Array").New(len(b))
+	js.CopyBytesToJS(v, b)
+	return v
+}
+
 func main() {
 	export("tlogPolicy", func(text string) policyOut { _, out := parsePolicy(text); return out })
 	export("tlogCheckpoint", verifyCheckpoint)
@@ -540,6 +614,23 @@ func main() {
 	}))
 	js.Global().Set("tlogProve", js.FuncOf(func(_ js.Value, args []js.Value) any {
 		return reply(proveInclusion(bytesArg(args[0]), int64(args[1].Int()), int64(args[2].Int()), args[3].String()))
+	}))
+	export("tlogLayout", tileLayout)
+	// Bundles and entries are passed as bytes too, and come back as bytes.
+	js.Global().Set("tlogBundle", js.FuncOf(func(_ js.Value, args []js.Value) any {
+		entries, err := splitBundle(bytesArg(args[0]))
+		if err != nil {
+			return reply(map[string]string{"error": err.Error()})
+		}
+		out := make([]any, len(entries))
+		for i, e := range entries {
+			out[i] = bytesValue(e)
+		}
+		return js.ValueOf(out)
+	}))
+	js.Global().Set("tlogLeafHash", js.FuncOf(func(_ js.Value, args []js.Value) any {
+		h := tlog.RecordHash(bytesArg(args[0]))
+		return bytesValue(h[:])
 	}))
 	js.Global().Set("tlogReady", true)
 	select {} // stay alive to serve calls

@@ -2,7 +2,8 @@
 
 import type { Bytes } from "./bytes.js";
 import type { CheckedEntry } from "./ingest.js";
-import { HttpError, type TileRef } from "./tiles.js";
+import { HttpError } from "./tiles.js";
+import type { TileRef } from "./verifier.js";
 import type { WorkerReply, WorkerRequest, WorkerResult } from "./worker.js";
 
 /** Thrown for work that was pending when its pool was shut down. */
@@ -22,7 +23,8 @@ export class WorkerPool {
   private readonly pending = new Map<number, Pending>();
   private nextId = 0;
 
-  constructor(size: number = Math.max(1, Math.min(4, navigator.hardwareConcurrency || 2))) {
+  /** @param module The verifier, compiled; each worker runs its own instance. */
+  constructor(module: Promise<WebAssembly.Module>, size: number = Math.max(1, Math.min(4, navigator.hardwareConcurrency || 2))) {
     for (let i = 0; i < size; i++) {
       const slot = { worker: new Worker(new URL("./worker.js", import.meta.url), { type: "module" }), busy: 0 };
       slot.worker.addEventListener("message", (ev: MessageEvent<WorkerReply>) => {
@@ -38,6 +40,7 @@ export class WorkerPool {
         // A worker that fails outright takes all its work with it.
         this.fail(new Error(`worker failed: ${ev.message || "could not be loaded"}`));
       });
+      module.then((m) => slot.worker.postMessage({ module: m }), () => { /* the page reports a verifier that cannot load */ });
       this.workers.push(slot);
     }
   }

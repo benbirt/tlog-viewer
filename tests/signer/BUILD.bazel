@@ -1,0 +1,25 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+
+# Keys and signed checkpoints for the tests, made by the Go packages the
+# verifier checks them with. See main.go.
+go_library(
+    name = "signer_lib",
+    srcs = ["main.go"],
+    importpath = "github.com/benbirt/tlog-viewer/tests/signer",
+    visibility = ["//visibility:private"],
+    deps = [
+        "@com_github_transparency_dev_formats//note",
+        "@org_golang_x_mod//sumdb/note",
+    ],
+)
+
+go_binary(
+    name = "signer",
+    testonly = True,
+    out = "signer.wasm",
+    embed = [":signer_lib"],
+    goarch = "wasm",
+    goos = "js",
+    pure = "on",
+    visibility = ["//:__pkg__"],
+)

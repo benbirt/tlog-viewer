@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import type { Browser } from "playwright-core";
 import { FAULTS } from "../../web/js/faults.js";
-import { leafHash } from "../../web/js/ingest.js";
 import { siteVerifier } from "../../tools/wasm.js";
 import { launch, SITE, Viewer } from "./harness.js";
 import { buildWorld, PUBLISHERS, type World } from "./testlog.js";
@@ -370,12 +369,12 @@ viewerTest("an entry's tlog-proof can be downloaded and checks out offline", asy
   // With nothing but the proof, the entry and the policy: the checkpoint
   // satisfies the policy, and the entry hashes up to its root.
   assert.match(proof, /^c2sp\.org\/tlog-proof@v1\nindex 123\n/);
-  assert.deepEqual(await verifier.checkProof(w.policy, proof, await leafHash(w.main.entries[123]!)),
+  assert.deepEqual(await verifier.checkProof(w.policy, proof, await verifier.leafHash(w.main.entries[123]!)),
     { ok: true, index: 123, origin: w.main.origin, size: 300 });
   // The same proof does not vouch for a different entry, nor with too few cosignatures left on it.
-  assert.equal((await verifier.checkProof(w.policy, proof, await leafHash(w.main.entries[124]!))).ok, false);
+  assert.equal((await verifier.checkProof(w.policy, proof, await verifier.leafHash(w.main.entries[124]!))).ok, false);
   const fewer = proof.split("\n").filter((l) => !l.startsWith("— two.witness.example ") && !l.startsWith("— three.witness.example ")).join("\n");
-  assert.match((await verifier.checkProof(w.policy, fewer, await leafHash(w.main.entries[123]!))).error ?? "", /./);
+  assert.match((await verifier.checkProof(w.policy, fewer, await verifier.leafHash(w.main.entries[123]!))).error ?? "", /./);
 
   // No proof is offered from simulated data.
   await v.goto("#log=test.example/log/0&entry=123&fault=witness-signature");

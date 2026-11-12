@@ -50,10 +50,13 @@ implementations, compiled to WebAssembly (`//verifier`):
 [transparency-dev/formats](https://github.com/transparency-dev/formats) reads
 the policy, opens signed checkpoints, verifies log signatures and witness
 cosignatures (Ed25519 and ML-DSA-44) and gives the policy's verdict, and
-`golang.org/x/mod/sumdb/tlog` hashes the Merkle tree and writes and checks
-proofs. `verifier/main.go` holds only the questions the page asks of them and
-the shape of the answers; the page has no implementation of these formats of
-its own. The module is about 1.4 MB (0.6 MB compressed) and runs in a worker.
+`golang.org/x/mod/sumdb/tlog` hashes leaves and the Merkle tree and writes and
+checks proofs, and [tessera](https://github.com/transparency-dev/tessera)'s
+`api` packages say where a log keeps its tiles and split its entry bundles.
+`verifier/main.go` holds only the questions the page asks of them and the shape
+of the answers; the page has no implementation of these formats of its own.
+The module is about 1.4 MB (0.6 MB compressed). The page compiles it once and
+runs an instance in each of its workers.
 
 The rest is TypeScript, compiled file-for-file by `tsc` and served as written.
 Entry signatures (ECDSA P-256) are verified by the browser's WebCrypto. Two
@@ -69,20 +72,22 @@ npm packages with pnpm through Bazel (see `MODULE.bazel`), and Go modules in
 `go.mod`.
 
 - `verifier/` — the Go verifier and its build.
-- `web/js/verifier.ts`, `goworker.ts` — the page's handle on the verifier, and
-  the worker it runs in.
-- `web/js/tiles.ts`, `interior.ts`, `grow.ts`, `entry.ts` — fetching tiles,
-  comparing them with what the verifier computed, following growth, and
-  decoding and checking entries. No DOM dependencies.
-- `web/js/ingest.ts`, `worker.ts`, `pool.ts` — entries are fetched, hashed and
-  checked in a small pool of web workers, so the page stays responsive as the
-  log grows.
+- `web/js/verifier.ts`, `gowasm.ts`, `goworker.ts` — the page's handle on the
+  verifier, loading the module, and the worker that answers the page.
+- `web/js/tiles.ts`, `interior.ts`, `grow.ts`, `entry.ts` — fetching what the
+  verifier says to fetch, comparing tiles with what it computed, following
+  growth, and decoding and checking entries. No DOM dependencies.
+- `web/js/ingest.ts`, `worker.ts`, `pool.ts` — entry bundles are fetched and
+  their entries checked in a small pool of web workers, so the page stays
+  responsive as the log grows.
 - `web/js/app.ts` — the UI.
 - `tests/e2e/` — the built site driven in a real browser (Playwright, with the
   Chrome already on the machine; set `CHROME_BIN` if it is not found). The logs
   it runs against are made up on each run, with their own keys, witnesses and
-  policy, so they can grow, fork and misbehave on demand. Nothing is fetched
-  from the network.
+  policy, so they can grow, fork and misbehave on demand. Their keys and
+  signatures are made by the same Go packages the verifier uses
+  (`tests/signer`), not by a second implementation. Nothing is fetched from
+  the network.
 - `tests/testdata/` — a real checkpoint, tiles and entries captured from
   `paic.google.com/log/0`, with the policy as it stood then, so the tests keep
   passing when the pinned policy changes.
@@ -128,7 +133,7 @@ hermetically), because the result is a quarter of the size of the Go compiler's.
 TinyGo has its own runtime and its own versions of parts of the standard
 library, so the same source is also built by the Go compiler with rules_go, and
 `tests/verifier/agreement.ts` holds the first to the second: over real and
-purpose-signed checkpoints, policies, trees and proofs, hand-made awkward
+purpose-signed checkpoints, policies, trees, proofs, tile layouts and bundles, hand-made awkward
 cases, and thousands of seeded mutations of each, the two builds must give the
 same answer, byte for byte. Both are built from the Go modules Bazel resolved,
 with no network access during the build.

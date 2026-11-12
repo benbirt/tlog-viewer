@@ -199,11 +199,15 @@ js_test(
     data = NODE_RUNTIME + [
         ":node_modules/playwright-core",
         ":site",
+        "//tests/signer",
+        "//verifier:go_wasm_exec",
     ],
     entry_point = "tests/e2e/viewer.e2e.js",
     # Chrome expects a home directory it can write to.
     env = {
         "HOME": "/tmp",
+        "SIGNER_EXEC": "$(rootpath //verifier:go_wasm_exec)",
+        "SIGNER_WASM": "$(rootpath //tests/signer)",
     },
 )
 
@@ -215,6 +219,7 @@ js_test(
     data = NODE_RUNTIME + glob(["tests/testdata/**"]) + [
         ":build_info",
         ":policy_data",
+        "//tests/signer",
         "//verifier:go_wasm_exec",
         "//verifier:tinygo_wasm_exec",
         "//verifier:verifier_go",
@@ -222,6 +227,8 @@ js_test(
     ],
     entry_point = "tests/verifier/agreement.js",
     env = {
+        "SIGNER_EXEC": "$(rootpath //verifier:go_wasm_exec)",
+        "SIGNER_WASM": "$(rootpath //tests/signer)",
         "VERIFIER_GO_EXEC": "$(rootpath //verifier:go_wasm_exec)",
         "VERIFIER_GO_WASM": "$(rootpath //verifier:verifier_go)",
         "VERIFIER_TINYGO_EXEC": "$(rootpath //verifier:tinygo_wasm_exec)",
