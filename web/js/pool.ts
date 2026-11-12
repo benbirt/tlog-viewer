@@ -59,12 +59,7 @@ export class WorkerPool {
 
   /** Fetches and checks one entry bundle; see checkBundle. */
   bundle(args: { base: string; fault: string | null; tile: TileRef; from: number; size: number; tileLeafHashes: Bytes }): Promise<CheckedEntry[]> {
-    return this.run({ op: "bundle", ...args }) as Promise<CheckedEntry[]>;
-  }
-
-  /** Hashes a tree; see hashTree. */
-  tree(leafHashes: Bytes, size: number): Promise<{ root: Bytes; interior: Bytes[] }> {
-    return this.run({ op: "tree", leafHashes, size }) as Promise<{ root: Bytes; interior: Bytes[] }>;
+    return this.run({ op: "bundle", ...args });
   }
 
   /** Stops the workers at once, abandoning whatever they were doing. */

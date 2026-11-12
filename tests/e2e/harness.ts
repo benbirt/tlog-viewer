@@ -54,6 +54,8 @@ export class Viewer {
   private requests: string[] = [];
   /** Titles served for claim documents, by URL. */
   readonly documents = new Map<string, string>();
+  /** Errors the page raised or logged, for explaining a failed test. */
+  readonly errors: string[] = [];
 
   private constructor(readonly context: BrowserContext, readonly page: Page, private readonly world: World) {}
 
@@ -61,6 +63,8 @@ export class Viewer {
     const context = await browser.newContext({ viewport: { width: options.width ?? 1280, height: options.height ?? 900 } });
     const page = await context.newPage();
     const v = new Viewer(context, page, world);
+    page.on("pageerror", (e) => v.errors.push(e.message));
+    page.on("console", (m) => { if (m.type() === "error") v.errors.push(m.text()); });
     await context.route("**/*", (route) => {
       const url = new URL(route.request().url());
       if (url.origin + "/" === SITE) {
@@ -71,7 +75,7 @@ export class Viewer {
             `export const POLICY_TEXT = ${JSON.stringify(world.policy)};\nexport const POLICY_SOURCE = ${JSON.stringify(source)};\n` });
         }
         const file = join(siteDir, path);
-        if (!existsSync(file)) return route.fulfill({ status: 404, body: "not found" });
+        if (!existsSync(file) || v.missing.has(path)) return route.fulfill({ status: 404, body: "not found" });
         return route.fulfill({ contentType: TYPES[extname(file)] ?? "application/octet-stream", body: readFileSync(file) });
       }
       const cors = { "access-control-allow-origin": "*" };
@@ -108,6 +112,9 @@ export class Viewer {
     files.set(path, edit(files.get(path)!.slice()));
   }
 
+  /** Paths of the site that are to be missing, such as "/wasm/verifier.wasm". */
+  readonly missing = new Set<string>();
+
   takeRequests(): string[] {
     const out = this.requests;
     this.requests = [];
@@ -124,7 +131,7 @@ export class Viewer {
   async settled(): Promise<void> {
     await this.page.waitForFunction(() => {
       const steps = [...document.querySelectorAll<HTMLElement>(".step")];
-      return steps[0]!.dataset.state !== "" && !steps.some((s) => s.dataset.state === "busy") &&
+      return !!steps[0]!.dataset.state && !steps.some((s) => s.dataset.state === "busy") &&
         !document.querySelector("#rows .row.pending:not(.unloaded)");
     });
   }

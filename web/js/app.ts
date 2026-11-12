@@ -6,34 +6,40 @@ import { claimDocumentUrl, claimTitle } from "./claims.js";
 import { logBaseUrl } from "./config.js";
 import { statementTextOf, type Summary } from "./entry.js";
 import { type Fault, faultById, FAULTS, faultyFetch } from "./faults.js";
-import { verifyCheckpointGo } from "./goengine.js";
 import { extendLeafHashes } from "./grow.js";
 import type { CheckedEntry } from "./ingest.js";
 import { verifyInteriorTiles } from "./interior.js";
-import { inclusionProof, rootFromLeafHashes } from "./merkle.js";
-import { type CheckpointResult, type SignatureResult, verifyCheckpoint } from "./note.js";
-import { logOrigins, parsePolicy, type QuorumNode } from "./policy.js";
 import { BUILD } from "./build_info.js";
 import { POLICY_SOURCE, POLICY_TEXT } from "./policy_data.js";
 import { WorkerPool } from "./pool.js";
-import { formatTlogProof } from "./proof.js";
 import { HttpError, LogClient, TILE_WIDTH, tilePath, type TileRef, tilesForSize } from "./tiles.js";
+import { type CheckpointResult, type QuorumNode, type SignatureResult, startVerifier } from "./verifier.js";
 
 const DEFAULT_PAGE_SIZE = 50;
 /** A checkpoint last witnessed longer ago than this draws a warning. */
 const STALE_AFTER_SECONDS = 24 * 60 * 60;
-const policy = parsePolicy(POLICY_TEXT);
+// Everything to do with transparency formats is done by the verifier: the Go
+// implementations, running as WebAssembly in a worker. If it cannot start, or
+// cannot read the policy compiled into the page, there is nothing to show.
+const verifier = startVerifier();
+const policy = await verifier.policy(POLICY_TEXT).catch((e: unknown) => {
+  const message = `This page cannot verify anything: ${e instanceof Error ? e.message : String(e)}`;
+  const el = document.getElementById("notice");
+  if (el) {
+    el.className = "notice bad";
+    el.textContent = message;
+  }
+  throw e;
+});
 /** What to call a checkpoint that passed: witnesses are only involved if the policy asks for them. */
 const checkpointWord = policy.quorum === "none" ? "verified" : "witnessed";
-const origins = logOrigins(policy);
+const origins = policy.origins;
 
 type Entry = CheckedEntry;
 
 /** Everything known about the log on screen; replaced wholesale on switching logs. */
 interface LogState {
   origin: string;
-  /** Which implementation verifies checkpoints for this load. */
-  engine: Engine;
   /** The simulated failure this load ran under, by id. */
   fault: string | null;
   /** Cancels the requests of a load that has been superseded. */
@@ -62,12 +68,6 @@ interface LogState {
   /** Loading stopped on an error, so entries not yet loaded will not be. */
   failed: boolean;
 }
-
-/**
- * Checkpoints are verified by the TypeScript in note.ts or, as a prototype,
- * by the Go implementation compiled to WebAssembly (goengine.ts).
- */
-type Engine = "ts" | "go";
 
 type StepId = "step-log" | "step-quorum" | "step-root" | "step-entries";
 const STEPS: StepId[] = ["step-log", "step-quorum", "step-root", "step-entries"];
@@ -165,8 +165,6 @@ interface Route {
   keys: boolean;
   /** The simulated failure in effect, by id. */
   fault: string | null;
-  /** Which implementation verifies checkpoints. */
-  engine: Engine;
 }
 
 const PAGE_SIZES = [25, 50, 100, 250];
@@ -193,7 +191,6 @@ function readRoute(): Route {
     checkpoint: p.get("checkpoint") === "1",
     keys: p.get("keys") === "1",
     fault: faultById(p.get("fault"))?.id ?? null,
-    engine: p.get("engine") === "go" ? "go" : "ts",
   };
 }
 
@@ -210,14 +207,13 @@ function href(r: Route): string {
   if (r.keys) p.set("keys", "1");
   if (r.entry !== null) p.set("entry", String(r.entry));
   if (r.fault) p.set("fault", r.fault);
-  if (r.engine === "go") p.set("engine", "go");
   return "#" + p.toString().replaceAll("%2F", "/");
 }
 
 /** A log's default view, keeping any simulated failure in effect. */
 const logRoute = (origin: string): Route => ({
   origin, entry: null, q: "", validity: "", publisher: "", problems: false,
-  page: 0, pageSize: ui.pageSize, checkpoint: false, keys: false, fault: ui.fault, engine: ui.engine,
+  page: 0, pageSize: ui.pageSize, checkpoint: false, keys: false, fault: ui.fault,
 });
 
 /** The route on screen. Changes to it go through navigate(). */
@@ -298,7 +294,6 @@ async function load(origin: string, attempt = 0): Promise<void> {
   const s: LogState = {
     origin,
     fault: fault?.id ?? null,
-    engine: ui.engine,
     abort,
     workers: new WorkerPool(),
     client: new LogClient(base, fault ? faultyFetch(fault, base) : undefined, abort.signal),
@@ -374,7 +369,7 @@ async function load(origin: string, attempt = 0): Promise<void> {
       if (live()) leafHashes.set(await s.client.hashTile(t), t.index * TILE_WIDTH * 32);
     });
     if (!live()) return;
-    const { root, interior: expected } = await s.workers.tree(leafHashes, cp.size);
+    const { root, interior: expected } = await verifier.tree(leafHashes, cp.size);
     if (!live()) return;
     if (!bytesEqual(root, cp.hash)) {
       setStep("step-root", "fail", `Recomputed ${b64Encode(root)}; checkpoint says ${b64Encode(cp.hash)}.`);
@@ -385,7 +380,7 @@ async function load(origin: string, attempt = 0): Promise<void> {
     setStep("step-root", "busy", `${rootText(cp.size)} Checking interior tiles…`);
     // The viewer never relies on the log's tiles above level 0, but a log that
     // serves ones inconsistent with its leaves is broken, so check them too.
-    const interior = await verifyInteriorTiles(s.client, leafHashes, cp.size, expected);
+    const interior = await verifyInteriorTiles(s.client, expected);
     if (!live()) return;
     showRootStep(cp.size, interior);
     s.leafHashes = leafHashes;
@@ -432,13 +427,7 @@ function fetchCheckpoint(s: LogState): Promise<string> {
 }
 
 function verifyFetched(s: LogState, raw: string): Promise<CheckpointResult> {
-  // The Go implementation verifies every algorithm itself, so a simulated
-  // lack of one in the browser does not apply to it.
-  if (s.engine === "go") return verifyCheckpointGo(policy, POLICY_TEXT, raw, { expectedOrigin: s.origin });
-  return verifyCheckpoint(policy, raw, {
-    expectedOrigin: s.origin,
-    disabledAlgs: new Set(faultById(s.fault)?.disabledAlgs),
-  });
+  return verifier.checkpoint(POLICY_TEXT, raw, s.origin);
 }
 
 /**
@@ -459,23 +448,12 @@ function showCheckpointSteps(s: LogState, result: CheckpointResult): boolean {
   const logSigs = result.signatures.filter((x) => x.role === "log");
   const logAlgs = (status: SignatureResult["status"]) =>
     logSigs.filter((x) => x.status === status).map((x) => x.algName).join(" + ");
-  const logUnsupportedOnly = !result.logSigned && logAlgs("unsupported") !== "" && logAlgs("invalid") === "";
   if (result.logSigned) {
     setStep("step-log", logAlgs("invalid") ? "warn" : "ok", `Signed by the log (${logAlgs("valid")})` +
-      (logAlgs("invalid") ? `; its ${logAlgs("invalid")} signature is invalid` : "") +
-      (logAlgs("unsupported") ? `; this browser cannot verify ${logAlgs("unsupported")}` : "") + "." +
-      (s.engine === "go" ? " Verified by the Go implementation (WebAssembly)." : ""));
-  } else if (logUnsupportedOnly) {
-    setStep("step-log", "fail", `The log signs with ${logAlgs("unsupported")} only, which this browser cannot verify.`);
+      (logAlgs("invalid") ? `; its ${logAlgs("invalid")} signature is invalid` : "") + ".");
   } else {
-    // Say what became of each of the log's signatures: one may be invalid while
-    // another could not be checked.
-    const reasons = [
-      logAlgs("invalid") && `${logAlgs("invalid")} invalid`,
-      logAlgs("unsupported") && `this browser cannot verify ${logAlgs("unsupported")}`,
-    ].filter(Boolean);
     setStep("step-log", "fail", logSigs.length > 0
-      ? `No valid log signature: ${reasons.join("; ")}.`
+      ? `No valid log signature: ${logAlgs("invalid")} invalid.`
       : "Not signed by any log key in the trust policy.");
   }
 
@@ -483,30 +461,21 @@ function showCheckpointSteps(s: LogState, result: CheckpointResult): boolean {
   const witnessSigs = result.signatures.filter((x) => x.role === "witness");
   const cosigners = witnessSigs.filter((x) => x.status === "valid");
   const invalid = witnessSigs.filter((x) => x.status === "invalid").length;
-  const unchecked = witnessSigs.filter((x) => x.status === "unsupported").length;
   // A checkpoint the witnesses have not seen for a day may not be the
   // log's latest: someone serving an old one would look like this.
   const witnessed = result.witnessedAt;
   // A time no clock could have produced is not old, only wrong; fmtAge says so.
   const stale = witnessed !== null && witnessed > 0n && witnessed <= MAX_UNIX_SECONDS &&
     now() / 1000 - Number(witnessed) > STALE_AFTER_SECONDS;
-  const rule = q.kind === "group" ? `${q.count} of ${q.children.length} in “${q.name}”, ${q.threshold} required` : q.name;
-  const quorumBlockedByBrowser = !q.satisfied && result.quorumPossible;
+  const rule = q.kind === "group" ? `${q.count} of ${q.children?.length ?? 0} in “${q.name}”, ${q.threshold} required` : q.name;
   setStep("step-quorum", !q.satisfied ? "fail" : invalid > 0 || stale ? "warn" : "ok",
     `${cosigners.length} valid cosignature${cosigners.length === 1 ? "" : "s"}; ${rule}.` +
     (witnessed !== null ? ` Witnessed ${fmtAge(witnessed, now())}${stale ? ". More than 24 hours old; this may not be the log's latest checkpoint" : ""}.` : "") +
-    (invalid > 0 ? ` ${invalid} cosignature${invalid === 1 ? " is" : "s are"} invalid.` : "") +
-    (unchecked > 0 ? ` ${unchecked} could not be verified by this browser.` : "") +
-    (quorumBlockedByBrowser ? " If valid, the quorum would be met." : ""));
+    (invalid > 0 ? ` ${invalid} cosignature${invalid === 1 ? " is" : "s are"} invalid.` : ""));
 
-  // The algorithms this browser could not check, for saying which are missing.
-  const uncheckable = [...new Set(result.signatures.filter((x) => x.status === "unsupported").map((x) => x.algName ?? "unknown"))];
   if (!result.ok) {
     skipSteps(2);
-    notice(logUnsupportedOnly || quorumBlockedByBrowser
-      ? `This browser cannot verify ${uncheckable.join(" or ")} signatures, which this checkpoint requires, so the log's entries are not shown.` +
-        (uncheckable.includes("ML-DSA-44") ? " A current version of Chrome can verify ML-DSA-44." : "")
-      : `The checkpoint does not satisfy the trust policy (${result.problems.join("; ")}), so the log's entries are not shown.`, true);
+    notice(`The checkpoint does not satisfy the trust policy (${result.problems.join("; ")}), so the log's entries are not shown.`, true);
     return false;
   }
   return true;
@@ -628,7 +597,7 @@ async function refresh(): Promise<void> {
       // An older checkpoint than the one in hand. If it is an earlier state of
       // the same tree this is only staleness somewhere between the log and
       // here, and the newer one stands. If not, the log has forked.
-      const earlier = await rootFromLeafHashes(s.leafHashes, cp.size);
+      const { root: earlier } = await verifier.tree(s.leafHashes, cp.size);
       if (!live()) return;
       if (!bytesEqual(earlier, cp.hash)) {
         return reportInconsistency(s, `The log now serves a tree of ${count(cp.size)} entries that differs from the first ${count(cp.size)} of the ${count(old.size)} verified earlier.`);
@@ -652,12 +621,12 @@ async function refresh(): Promise<void> {
     if (growth.kind === "rewritten") {
       return reportInconsistency(s, `The log now serves a different leaf hash for entry ${count(growth.index)}, which it had already published.`);
     }
-    const { root, interior: expected } = await s.workers.tree(growth.leafHashes, cp.size);
+    const { root, interior: expected } = await verifier.tree(growth.leafHashes, cp.size);
     if (!live()) return;
     if (!bytesEqual(root, cp.hash)) {
       return reportInconsistency(s, `The new tree of size ${count(cp.size)} does not extend the earlier ${count(old.size)}-entry tree: keeping earlier leaf hashes gives Merkle root ${b64Encode(root)}, but the new checkpoint says ${b64Encode(cp.hash)}.`);
     }
-    const interior = await verifyInteriorTiles(s.client, growth.leafHashes, cp.size, expected);
+    const interior = await verifyInteriorTiles(s.client, expected);
     if (!live()) return;
 
     // Verified: take up the new tree, then fetch the entries added to it.
@@ -716,15 +685,15 @@ function updateEntriesStep(s: LogState): void {
 const SIGNATURE_BADGE: Record<SignatureResult["status"], [string, string]> = {
   "valid": ["valid", "ok"],
   "invalid": ["invalid", "bad"],
-  "unsupported": ["not checked", "warn"],
   "unknown-key": ["not in policy", ""],
 };
 
 function quorumTree(n: QuorumNode): HTMLElement {
-  const label = n.kind === "group" ? `${n.name} — ${n.count} of ${n.children.length}, ${n.threshold} required` : n.name;
+  const children = n.children ?? [];
+  const label = n.kind === "group" ? `${n.name} — ${n.count} of ${children.length}, ${n.threshold} required` : n.name;
   return h("li", null,
     h("span", { class: n.satisfied ? "sat" : "unsat" }, n.satisfied ? "✓ " : "○ "), label,
-    n.kind === "group" ? h("ul", null, ...n.children.map(quorumTree)) : null);
+    n.kind === "group" ? h("ul", null, ...children.map(quorumTree)) : null);
 }
 
 function renderCheckpoint(s: LogState, result: CheckpointResult): void {
@@ -760,7 +729,7 @@ function renderCheckpoint(s: LogState, result: CheckpointResult): void {
       // Exactly the text the signatures were checked over.
       h("pre", null, result.text),
       result.extensionsAuthenticated ? null : h("p", { class: "caveat" },
-        "The lines after the Merkle root are not covered by any log signature this browser verified, " +
+        "The lines after the Merkle root are not covered by any valid log signature, " +
         "so whoever relayed the checkpoint could have changed them.")),
   );
 }
@@ -998,8 +967,7 @@ function proofControl(s: LogState, e: Entry): Child {
   const button = h("button", { type: "button", class: "btn", id: "download-proof" }, "Download tlog-proof");
   button.addEventListener("click", async () => {
     if (!s.leafHashes || !s.checkpointRaw) return;
-    const hashes = await inclusionProof(s.leafHashes, e.index, s.size);
-    const text = formatTlogProof({ index: e.index, hashes, checkpoint: s.checkpointRaw });
+    const text = await verifier.prove(s.leafHashes, s.size, e.index, s.checkpointRaw);
     const url = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
     const a = h("a", { href: url, download: `${s.origin.replaceAll("/", "_")}-${e.index}.tlog-proof` });
     a.click();
@@ -1116,12 +1084,6 @@ function renderDebug(fault: Fault | null): void {
   $("debug-list").replaceChildren(
     item(null, "None", "Shows the log as served, without alterations."),
     ...FAULTS.map((f) => item(f.id, f.title, f.description)));
-  const engine = (id: Engine, title: string) =>
-    h("a", { href: href({ ...ui, engine: id, entry: null }), ...(id === ui.engine ? { "aria-current": "true" } : {}) }, title);
-  $("engine-choice").replaceChildren(
-    "Checkpoint verifier: ", engine("ts", "TypeScript with WebCrypto"), " (the default) or ",
-    engine("go", "the Go implementation as WebAssembly"), " (a prototype, about 0.6 MB to download; ",
-    h("a", { href: "wasm/NOTICE.txt" }, "notices"), ").");
 }
 
 function init(): void {
@@ -1194,7 +1156,7 @@ function init(): void {
     ui = readRoute();
     syncControls();
     $("logs").replaceChildren(...origins.map((o) => h("a", { href: href(logRoute(o)), "data-origin": o }, o)));
-    if (state?.origin !== ui.origin || state.fault !== ui.fault || state.engine !== ui.engine) {
+    if (state?.origin !== ui.origin || state.fault !== ui.fault) {
       void load(ui.origin);
     } else {
       markCurrentLog(ui.origin);

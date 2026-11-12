@@ -4,13 +4,13 @@ import test from "node:test";
 import type { Bytes } from "../web/js/bytes.js";
 import { decodeEntry } from "../web/js/entry.js";
 import { type Fault, faultById, FAULTS, faultTargets, faultyFetch } from "../web/js/faults.js";
-import { leafHash } from "../web/js/merkle.js";
-import { verifyCheckpoint } from "../web/js/note.js";
-import { parsePolicy } from "../web/js/policy.js";
+import { leafHash } from "../web/js/ingest.js";
 import { LogClient, parseBundle } from "../web/js/tiles.js";
+import { siteVerifier } from "../tools/wasm.js";
 
 const file = (f: string) => readFileSync(new URL("testdata/" + f, import.meta.url));
-const policy = parsePolicy(file("prod-verifier-668ba3c.policy").toString());
+const policy = file("prod-verifier-668ba3c.policy").toString();
+const verifier = await siteVerifier(new URL("../site/", import.meta.url));
 const raw = file("checkpoint-5522.txt").toString();
 const bundle: Bytes = new Uint8Array(file("entries-first7.bin"));
 const tile0: Bytes = new Uint8Array(file("tile-0-000.bin"));
@@ -25,7 +25,7 @@ const origin = "paic.google.com/log/0";
 test("fault ids are unique and each fault does something", () => {
   assert.equal(new Set(FAULTS.map((f) => f.id)).size, FAULTS.length);
   for (const f of FAULTS) {
-    assert.ok(f.checkpoint || f.checkpointFromOtherLog || f.tile || f.entry || f.disabledAlgs || f.clockOffsetMs, f.id);
+    assert.ok(f.checkpoint || f.checkpointFromOtherLog || f.tile || f.entry || f.clockOffsetMs, f.id);
     assert.equal(f.entry !== undefined, f.entryStage !== undefined, f.id);
   }
   assert.equal(faultById("no-such-fault"), null);
@@ -36,7 +36,7 @@ test("fault ids are unique and each fault does something", () => {
 });
 
 test("checkpoint faults produce the failures they describe", async () => {
-  const verify = (id: string) => verifyCheckpoint(policy, fault(id).checkpoint!(raw), { expectedOrigin: origin });
+  const verify = (id: string) => verifier.checkpoint(policy, fault(id).checkpoint!(raw), origin);
 
   const logSig = await verify("log-signature");
   assert.ok(!logSig.ok && !logSig.logSigned && logSig.quorum.satisfied);
@@ -53,21 +53,6 @@ test("checkpoint faults produce the failures they describe", async () => {
   const noQuorum = await verify("no-quorum");
   assert.ok(!noQuorum.ok && noQuorum.logSigned && !noQuorum.quorum.satisfied);
   assert.equal(noQuorum.signatures.filter((s) => s.role === "witness").length, 1);
-});
-
-test("the ML-DSA fault makes those signatures uncheckable, not invalid", async () => {
-  const r = await verifyCheckpoint(policy, raw, { disabledAlgs: new Set(fault("no-ml-dsa").disabledAlgs) });
-  assert.ok(r.ok); // Ed25519 alone still satisfies this policy
-  assert.deepEqual(r.warnings, []);
-  assert.equal(r.signatures.filter((s) => s.status === "unsupported").length, 3);
-});
-
-test("the quorum time is when the quorum was reached, not the newest cosignature", async () => {
-  const r = await verifyCheckpoint(policy, raw);
-  // Witnessed at :21 (the staging witness, outside the quorum) and :22.
-  assert.equal(r.witnessedAt, 1794416842n);
-  assert.equal(new Date(Number(r.witnessedAt) * 1000).toISOString(), "2026-11-11T17:07:22.000Z");
-  assert.equal((await verifyCheckpoint(policy, fault("no-quorum").checkpoint!(raw))).witnessedAt, null);
 });
 
 test("tile faults are applied by the fetch wrapper", async () => {

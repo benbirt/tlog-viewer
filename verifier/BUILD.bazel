@@ -1,0 +1,92 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("@rules_tinygo//tinygo:defs.bzl", "tinygo_binary")
+load(":tinygo.bzl", "tinygo_wasm_exec", "wasm_notices")
+
+# The Go implementations of the transparency formats as a WebAssembly module,
+# which the page runs to verify logs. See main.go. It is built
+# twice from the same source: by TinyGo, which is what the site ships, and by
+# the Go compiler, which the tests hold the TinyGo build to.
+package(default_visibility = ["//:__pkg__"])
+
+go_library(
+    name = "verifier_lib",
+    srcs = ["main.go"],
+    importpath = "github.com/benbirt/tlog-viewer/verifier",
+    visibility = ["//visibility:private"],
+    deps = [
+        "@com_github_transparency_dev_formats//log",
+        "@com_github_transparency_dev_formats//note",
+        "@com_github_transparency_dev_formats//policy",
+        "@com_github_transparency_dev_formats//proof",
+        "@org_golang_x_mod//sumdb/note",
+        "@org_golang_x_mod//sumdb/tlog",
+    ],
+)
+
+go_binary(
+    name = "verifier_go",
+    out = "verifier_go.wasm",
+    embed = [":verifier_lib"],
+    gc_linkopts = [
+        "-s",
+        "-w",
+    ],
+    goarch = "wasm",
+    goos = "js",
+    pure = "on",
+)
+
+# The JavaScript half of Go's WebAssembly runtime, from the Go SDK.
+genrule(
+    name = "go_wasm_exec",
+    srcs = ["@go_sdk//:lib/wasm/wasm_exec.js"],
+    outs = ["go_wasm_exec.js"],
+    cmd = "cp $< $@",
+)
+
+# Built from the same go_library and the dependencies Bazel resolved for it,
+# with no network access.
+tinygo_binary(
+    name = "verifier_tinygo",
+    out = "verifier.wasm",
+    embed = [":verifier_lib"],
+    tags = ["block-network"],
+    target = "wasm",
+)
+
+# TinyGo's own JavaScript runtime, which differs from Go's.
+tinygo_wasm_exec(name = "tinygo_wasm_exec")
+
+# The licences of the code in the module the site ships, served beside it.
+# Go modules and the Go SDK do not export their licence files to Bazel, so the texts are kept
+# in licenses/, and the build fails if the modules listed here are not exactly
+# the ones linked.
+wasm_notices(
+    name = "notices",
+    out = "NOTICE.txt",
+    header = """verifier.wasm is built from verifier/main.go in
+https://github.com/benbirt/tlog-viewer (MIT) by TinyGo {tinygo}. It contains
+code from the projects below, at the versions pinned in go.mod and
+MODULE.bazel at the commit named in the page's footer, under the licences
+that follow.
+
+tinygo_wasm_exec.js is from TinyGo, adapted there from the Go project's
+wasm_exec.js, under the licences of those two projects.""",
+    binary = ":verifier_lib",
+    module_licenses = glob(["licenses/*.txt"]),
+    modules = {
+        "com_github_transparency_dev_formats": "github.com/transparency-dev/formats",
+        "org_golang_x_mod": "golang.org/x/mod",
+        "org_golang_x_crypto": "golang.org/x/crypto",
+        "io_filippo_mldsa": "filippo.io/mldsa",
+    },
+    licenses = {
+        "licenses/go.txt": "The Go standard library",
+        "licenses/tinygo.txt": "TinyGo: compiler and runtime",
+        "licenses/wasi-libc.txt": "wasi-libc (C library linked by TinyGo)",
+    },
+    toolchain_licenses = {
+        "lib/musl/COPYRIGHT": "musl (the source of much of wasi-libc)",
+        "lib/compiler-rt-builtins/LICENSE.TXT": "compiler-rt builtins (LLVM)",
+    },
+)

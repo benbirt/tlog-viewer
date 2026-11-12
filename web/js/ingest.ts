@@ -1,11 +1,10 @@
-// The heavy part of loading a log: hashing and checking entries, and hashing
-// the tree. It has no DOM dependencies, so it runs in a worker (worker.ts),
-// keeping the page responsive however large the log is.
+// The heavy part of loading a log: fetching, hashing and checking its entries.
+// It has no DOM dependencies, so it runs in workers (worker.ts), keeping the
+// page responsive however large the log is.
 
-import { type Bytes, bytesEqual } from "./bytes.js";
+import { type Bytes, bytesEqual, concat, sha256 } from "./bytes.js";
 import { type DecodedEntry, decodeEntry } from "./entry.js";
 import { type Fault, faultTargets } from "./faults.js";
-import { interiorTileHashes, leafHash, rootFromLeafHashes } from "./merkle.js";
 import { type LogClient, TILE_WIDTH, type TileRef } from "./tiles.js";
 
 /**
@@ -24,6 +23,12 @@ export interface CheckedEntry extends Omit<DecodedEntry, "statement" | "statemen
   /** Lower-cased text the search box matches against. */
   haystack: string;
 }
+
+/**
+ * The hash of an entry as a leaf of the log's tree: SHA-256 of a zero byte and
+ * the entry (RFC 6962). Everything above the leaves is hashed by the verifier.
+ */
+export const leafHash = (entry: Bytes): Promise<Bytes> => sha256(concat(Uint8Array.of(0), entry));
 
 function haystack(index: number, e: DecodedEntry): string {
   const s = e.summary;
@@ -64,9 +69,4 @@ export async function checkBundle(
     });
   }
   return out;
-}
-
-/** The tree head over the leaf hashes, and what the log's interior tiles must contain. */
-export async function hashTree(leafHashes: Bytes, size: number): Promise<{ root: Bytes; interior: Bytes[] }> {
-  return { root: await rootFromLeafHashes(leafHashes, size), interior: await interiorTileHashes(leafHashes, size) };
 }

@@ -3,7 +3,6 @@
 // been fetched; nothing here can make a check pass that would otherwise fail.
 
 import { b64Decode, b64Encode, type Bytes, utf8Decode, utf8Encode } from "./bytes.js";
-import { ALG_MLDSA44 } from "./policy.js";
 import type { Fetch } from "./tiles.js";
 
 export interface Fault {
@@ -26,8 +25,6 @@ export interface Fault {
    */
   entry?: (bytes: Bytes) => Bytes;
   entryStage?: "served" | "logged";
-  /** Signature algorithms to treat as unsupported by this browser. */
-  disabledAlgs?: number[];
   /** Moves the page's idea of the current time forward. */
   clockOffsetMs?: number;
 }
@@ -119,12 +116,6 @@ export const FAULTS: Fault[] = [
     title: "Checkpoint not witnessed recently",
     description: "This page's clock is moved forward three days, so the cosignatures are more than 24 hours old. Validity periods are checked against that date too.",
     clockOffsetMs: 3 * 24 * 60 * 60 * 1000,
-  },
-  {
-    id: "no-ml-dsa",
-    title: "Browser without ML-DSA-44",
-    description: "ML-DSA-44 signatures are treated as unsupported, as in a browser whose WebCrypto API lacks the algorithm.",
-    disabledAlgs: [ALG_MLDSA44],
   },
   {
     id: "leaf-hashes",

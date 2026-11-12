@@ -25,3 +25,14 @@ test("every import in the served modules names a file that exists", () => {
   }
   assert.ok(imports > 10);
 });
+
+test("the verifier is served where its worker looks for it, with its licences", () => {
+  const site = new URL("../site/", import.meta.url);
+  const worker = readFileSync(new URL("js/goworker.js", site), "utf8");
+  const fetched = [...worker.matchAll(/new URL\("([^"]+)", import\.meta\.url\)/g)].map((m) => m[1]!);
+  assert.deepEqual(fetched.sort(), ["../wasm/tinygo_wasm_exec.js", "../wasm/verifier.wasm"]);
+  for (const f of fetched) assert.ok(existsSync(new URL(f, new URL("js/", site))), f);
+  const notice = readFileSync(new URL("wasm/NOTICE.txt", site), "utf8");
+  for (const name of ["transparency-dev/formats", "golang.org/x/mod", "filippo.io/mldsa", "Go standard library", "TinyGo"]) assert.ok(notice.includes(name), name);
+  assert.match(readFileSync(new URL("index.html", site), "utf8"), /href="wasm\/NOTICE\.txt"/);
+});

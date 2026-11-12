@@ -2,11 +2,9 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import type { Browser } from "playwright-core";
 import { FAULTS } from "../../web/js/faults.js";
-import { leafHash, rootFromInclusionProof } from "../../web/js/merkle.js";
-import { parseCheckpoint, parseNote, verifyCheckpoint } from "../../web/js/note.js";
-import { parsePolicy } from "../../web/js/policy.js";
-import { parseTlogProof } from "../../web/js/proof.js";
-import { launch, Viewer } from "./harness.js";
+import { leafHash } from "../../web/js/ingest.js";
+import { siteVerifier } from "../../tools/wasm.js";
+import { launch, SITE, Viewer } from "./harness.js";
 import { buildWorld, PUBLISHERS, type World } from "./testlog.js";
 
 // 300 entries: one full tile and a partial one, so the log has an interior
@@ -15,9 +13,10 @@ const SIZE = 300;
 
 let browser: Browser;
 let world: World;
+const verifier = await siteVerifier(new URL("../../site/", import.meta.url));
 
 before(async () => {
-  [browser, world] = await Promise.all([launch(), buildWorld()]);
+  [browser, world] = await Promise.all([launch(), buildWorld(verifier)]);
   await world.main.append(SIZE);
 });
 after(() => browser?.close());
@@ -30,7 +29,7 @@ function viewerTest(name: string, fn: (v: Viewer, w: World) => Promise<void>, op
     try {
       await fn(v, w);
     } catch (e) {
-      console.error(`page state at failure: ${await v.outcome().catch(() => "?")} | ${await v.text("#notice").catch(() => "?")}`);
+      console.error(`page state at failure: ${await v.outcome().catch(() => "?")} | ${await v.text("#notice").catch(() => "?")} | ${v.errors.join("; ")}`);
       throw e;
     } finally {
       await v.close();
@@ -77,7 +76,6 @@ const FAULT_OUTCOMES: Record<string, [outcome: string, failedRows: number]> = {
   "no-quorum": ["ok fail none none", 0],
   "wrong-log": ["fail none none none", 0],
   "stale-checkpoint": ["ok warn ok ok", 0],
-  "no-ml-dsa": ["ok ok ok ok", 0],
   "leaf-hashes": ["ok ok fail none", 0],
   "interior-tile": ["ok ok fail ok", 0],
   "tile-unavailable": ["ok ok ok fail", 0],
@@ -106,11 +104,6 @@ for (const fault of FAULTS) {
 }
 
 viewerTest("the simulated failures say what went wrong", async (v) => {
-  await v.goto("#log=test.example/log/0&fault=no-ml-dsa");
-  const s = await v.steps();
-  assert.match(s.log.text, /Signed by the log \(Ed25519\); this browser cannot verify ML-DSA-44/);
-  assert.match(s.quorum.text, /2 valid cosignatures.*1 could not be verified by this browser/);
-
   await v.goto("#log=test.example/log/0&fault=stale-checkpoint");
   assert.match((await v.steps()).quorum.text, /Witnessed 3 days ago\. More than 24 hours old/);
 
@@ -372,20 +365,17 @@ viewerTest("an entry's tlog-proof can be downloaded and checks out offline", asy
   assert.equal(download.suggestedFilename(), "test.example_log_0-123.tlog-proof");
   const chunks: Buffer[] = [];
   for await (const chunk of await download.createReadStream()) chunks.push(chunk as Buffer);
-  const proof = parseTlogProof(Buffer.concat(chunks).toString());
+  const proof = Buffer.concat(chunks).toString();
 
   // With nothing but the proof, the entry and the policy: the checkpoint
   // satisfies the policy, and the entry hashes up to its root.
-  assert.equal(proof.index, 123);
-  const result = await verifyCheckpoint(parsePolicy(w.policy), proof.checkpoint, { expectedOrigin: w.main.origin });
-  assert.deepEqual(result.problems, []);
-  const cp = parseCheckpoint(parseNote(proof.checkpoint).text);
-  assert.equal(cp.size, 300);
-  const root = await rootFromInclusionProof(await leafHash(w.main.entries[123]!), 123, cp.size, proof.hashes);
-  assert.deepEqual([...root], [...cp.hash]);
-  // The same proof does not vouch for a different entry.
-  const other = await rootFromInclusionProof(await leafHash(w.main.entries[124]!), 123, cp.size, proof.hashes);
-  assert.notDeepEqual([...other], [...cp.hash]);
+  assert.match(proof, /^c2sp\.org\/tlog-proof@v1\nindex 123\n/);
+  assert.deepEqual(await verifier.checkProof(w.policy, proof, await leafHash(w.main.entries[123]!)),
+    { ok: true, index: 123, origin: w.main.origin, size: 300 });
+  // The same proof does not vouch for a different entry, nor with too few cosignatures left on it.
+  assert.equal((await verifier.checkProof(w.policy, proof, await leafHash(w.main.entries[124]!))).ok, false);
+  const fewer = proof.split("\n").filter((l) => !l.startsWith("— two.witness.example ") && !l.startsWith("— three.witness.example ")).join("\n");
+  assert.match((await verifier.checkProof(w.policy, fewer, await leafHash(w.main.entries[123]!))).error ?? "", /./);
 
   // No proof is offered from simulated data.
   await v.goto("#log=test.example/log/0&entry=123&fault=witness-signature");
@@ -407,69 +397,21 @@ viewerTest("claims are titled from the documents they link to, where those can b
   assert.equal(await v.page.locator("ul.claims a").count(), 3);
 });
 
-// The prototype Go engine: checkpoints verified by the Go implementation,
-// running in the page as WebAssembly.
-const GO = "&engine=go";
-
-viewerTest("with engine=go, the Go implementation verifies the checkpoint", async (v) => {
-  await v.goto("#log=test.example/log/0" + GO);
-  assert.equal(await v.outcome(), "ok ok ok ok");
-  const s = await v.steps();
-  assert.match(s.log.text, /Signed by the log \(Ed25519 \+ ML-DSA-44\)\. Verified by the Go implementation \(WebAssembly\)\./);
-  assert.match(s.quorum.text, /3 valid cosignatures; 3 of 3 in “two-of-three”, 2 required\. Witnessed/);
-  assert.equal(await v.text("#count"), "300 entries");
-  // The choice is in the address and survives navigation within the page.
-  await v.page.locator("#rows .row a").first().click();
-  await v.drawer(true);
-  assert.equal(new URLSearchParams((await v.hash()).slice(1)).get("engine"), "go");
-
-  // Without it, the module is not even fetched.
-  const plain = await Viewer.open(browser, world);
-  try {
-    const wasm: string[] = [];
-    plain.page.on("request", (r) => { if (r.url().endsWith(".wasm")) wasm.push(r.url()); });
-    await plain.goto();
-    assert.doesNotMatch((await plain.steps()).log.text, /Go implementation/);
-    assert.deepEqual(wasm, []);
-  } finally {
-    await plain.close();
-  }
-});
-
-for (const fault of FAULTS) {
-  viewerTest(`with engine=go, simulated failure: ${fault.title}`, async (v) => {
-    await v.goto(`#log=test.example/log/0&fault=${fault.id}${GO}`);
-    const [outcome, failedRows] = FAULT_OUTCOMES[fault.id]!;
-    assert.equal(await v.outcome(), outcome);
-    assert.equal(await v.page.locator("#rows .badge.bad").count(), failedRows);
-  });
-}
-
-viewerTest("with engine=go, a growing log is followed and a broken one is caught", async (v, w) => {
-  await v.page.clock.install();
-  await v.goto("#log=test.example/log/0" + GO);
-  await w.main.append(20);
-  await v.serve(w.main);
-  await nextCheck(v);
-  assert.equal(await v.outcome(), "ok ok ok ok");
-  assert.equal(await v.text("#count"), "320 entries");
-
-  await w.main.append(1);
-  await v.serve(w.main, { witnesses: 1 });
-  await v.page.clock.fastForward(61_000);
-  await v.page.waitForFunction(() => document.querySelector<HTMLElement>("#step-quorum")!.dataset.state === "fail");
-  assert.equal(await v.outcome(), "ok fail none none");
-});
-
-viewerTest("the debug menu switches between the two verifiers", async (v) => {
+viewerTest("the verifier is the Go implementation, fetched once and run off the page's thread", async (v) => {
+  const wasm: string[] = [];
+  v.page.on("request", (r) => { if (r.url().endsWith(".wasm")) wasm.push(new URL(r.url()).pathname); });
   await v.goto();
-  await v.page.click("#debug > summary");
-  await v.page.locator("#engine-choice a", { hasText: "Go implementation" }).click();
-  await v.page.waitForFunction(() => location.hash.includes("engine=go"));
-  await v.settled();
-  assert.match((await v.steps()).log.text, /Verified by the Go implementation/);
-  await v.page.locator("#engine-choice a", { hasText: "TypeScript" }).click();
-  await v.page.waitForFunction(() => !location.hash.includes("engine=go"));
-  await v.settled();
-  assert.doesNotMatch((await v.steps()).log.text, /Go implementation/);
+  assert.equal(await v.outcome(), "ok ok ok ok");
+  await v.goto("#log=test.example/log/1");
+  assert.deepEqual(wasm, ["/wasm/verifier.wasm"]);
+  assert.equal(await v.page.evaluate(() => Object.keys(globalThis).filter((k) => /^(tlog|Go$)/.test(k)).length), 0);
+});
+
+viewerTest("a page that cannot load its verifier says so, and shows no log", async (v) => {
+  v.missing.add("/wasm/verifier.wasm");
+  await v.page.goto(SITE);
+  await v.page.waitForFunction(() => document.querySelector("#notice")?.textContent !== "");
+  assert.match(await v.text("#notice"), /This page cannot verify anything: the verifier could not be loaded/);
+  assert.equal(await v.page.locator("#rows .row").count(), 0);
+  assert.equal(await v.outcome(), "none none none none");
 });

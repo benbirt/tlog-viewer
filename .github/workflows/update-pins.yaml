@@ -110,7 +110,7 @@ jobs:
             echo "BODY=Node $old to $new, the newest $major.x that rules_nodejs $rules can fetch."
           } >> "$GITHUB_ENV"
 
-      # rules_tinygo builds one of the two test oracles (//oracle). Like
+      # rules_tinygo builds the verifier the site ships (//verifier). Like
       # google-tlog-witness it is not in a registry, so it is followed by commit.
       # For now that is the hermetic-embed branch of a fork, which builds with no
       # network access; go back to ptxmac/rules_tinygo once that is merged there.
