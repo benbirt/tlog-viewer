@@ -20,7 +20,7 @@ updates:
       npm:
         patterns: ["*"]
 
-  # go.mod: the Go implementations that the test oracle wraps (//oracle).
+  # go.mod: the Go implementations the page verifies with (//verifier).
   - package-ecosystem: gomod
     directory: /
     schedule:

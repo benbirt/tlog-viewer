@@ -38,7 +38,7 @@ ts_project(
     srcs = glob([
         "tests/*.ts",
         "tests/e2e/*.ts",
-        "tests/oracle/*.ts",
+        "tests/verifier/*.ts",
         "tools/*.ts",
     ]),
     declaration = True,
@@ -69,17 +69,21 @@ js_binary(
     entry_point = "tools/gen_policy.js",
 )
 
-# Bakes the policy into a JS module, failing the build if the viewer's own
-# parser rejects it.
+# Bakes the policy into a JS module, failing the build if the verifier the
+# page will read it with rejects it.
 js_run_binary(
     name = "policy_data",
     srcs = [
         "MODULE.bazel",
         ":prod-verifier.policy",
+        "//verifier:tinygo_wasm_exec",
+        "//verifier:verifier_tinygo",
     ],
     args = [
         "prod-verifier.policy",
         "MODULE.bazel",
+        "$(rootpath //verifier:verifier_tinygo)",
+        "$(rootpath //verifier:tinygo_wasm_exec)",
     ],
     stdout = "web/js/policy_data.js",
     tool = ":gen_policy",
@@ -142,16 +146,16 @@ copy_to_directory(
     srcs = [
         "web/index.html",
         "web/style.css",
-        "web/wasm/NOTICE.txt",
         ":build_info",
         ":deps_bundle",
         ":licenses",
         ":policy_data",
         ":web",
-        # The Go implementation as WebAssembly, for the page's optional
-        # engine=go verifier (web/js/goengine.ts).
-        "//oracle:oracle_tinygo",
-        "//oracle:tinygo_wasm_exec",
+        # The verifier: the Go implementations of the transparency formats
+        # as WebAssembly, the script that runs it, and their licences.
+        "//verifier:notices",
+        "//verifier:tinygo_wasm_exec",
+        "//verifier:verifier_tinygo",
     ],
     # tsc's own deps.js, with its bare imports, gives way to the bundle.
     exclude_srcs_patterns = [
@@ -160,7 +164,7 @@ copy_to_directory(
     ],
     replace_prefixes = {
         "bundled": "js",
-        "oracle": "wasm",
+        "verifier": "wasm",
     },
     root_paths = ["web"],
 )
@@ -203,27 +207,24 @@ js_test(
     },
 )
 
-# The TypeScript verifier against the Go implementations of the same formats
-# (//oracle), once for each compiler the oracle is built with.
-[
-    js_test(
-        name = "oracle_%s_test" % variant,
-        size = "medium",
-        data = NODE_RUNTIME + glob(["tests/testdata/**"]) + [
-            ":build_info",
-            ":policy_data",
-            "//oracle:%s_wasm_exec" % variant,
-            "//oracle:oracle_%s" % variant,
-        ],
-        entry_point = "tests/oracle/differential.js",
-        env = {
-            "ORACLE_EXEC": "$(rootpath //oracle:%s_wasm_exec)" % variant,
-            "ORACLE_VARIANT": variant,
-            "ORACLE_WASM": "$(rootpath //oracle:oracle_%s)" % variant,
-        },
-    )
-    for variant in [
-        "go",
-        "tinygo",
-    ]
-]
+# The verifier as TinyGo builds it for the site against the same source built
+# by the Go compiler: tests/verifier/agreement.ts.
+js_test(
+    name = "verifier_agreement_test",
+    size = "medium",
+    data = NODE_RUNTIME + glob(["tests/testdata/**"]) + [
+        ":build_info",
+        ":policy_data",
+        "//verifier:go_wasm_exec",
+        "//verifier:tinygo_wasm_exec",
+        "//verifier:verifier_go",
+        "//verifier:verifier_tinygo",
+    ],
+    entry_point = "tests/verifier/agreement.js",
+    env = {
+        "VERIFIER_GO_EXEC": "$(rootpath //verifier:go_wasm_exec)",
+        "VERIFIER_GO_WASM": "$(rootpath //verifier:verifier_go)",
+        "VERIFIER_TINYGO_EXEC": "$(rootpath //verifier:tinygo_wasm_exec)",
+        "VERIFIER_TINYGO_WASM": "$(rootpath //verifier:verifier_tinygo)",
+    },
+)

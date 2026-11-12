@@ -57,9 +57,8 @@ typescript = use_extension("@aspect_rules_ts//ts:extensions.bzl", "typescript", 
 typescript.deps(version_from = "//:package.json")
 use_repo(typescript, "npm_typescript")
 
-# Go is used only for the test oracle (//oracle): the Go implementations of
-# the transparency formats, compiled to WebAssembly so that the TypeScript
-# verifier can be tested against them.
+# Go is what the page verifies with: //verifier is the Go implementations of
+# the transparency formats, compiled to WebAssembly.
 go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk", dev_dependency = True)
 go_sdk.from_file(
     name = "go_sdk",
@@ -75,7 +74,7 @@ use_repo(
     "org_golang_x_mod",
 )
 
-# TinyGo builds a second oracle from the same source. Its rules are not in a
+# TinyGo builds the module the site ships. Its rules are not in a
 # registry, so they are pinned by commit, which update-pins.yaml advances. The
 # pin is to a fork's hermetic-embed branch, which builds go_library targets
 # with no network access; return to ptxmac/rules_tinygo once it has that.

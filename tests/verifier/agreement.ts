@@ -1,30 +1,40 @@
-// Differential tests: the TypeScript verifier against the Go implementations
-// of the same formats, on valid input, on hand-made awkward input and on
-// thousands of mutations of both.
-//
-// The rule being tested is that the page never accepts what the Go code
-// rejects. Where the page is stricter than the Go code on purpose, the reason
-// is named in STRICTER below and counted; any other disagreement fails.
+// The verifier is built twice from the same Go source: by TinyGo, which is
+// what the site ships, and by the Go compiler. TinyGo has its own runtime,
+// its own reflection and its own builds of parts of the standard library, so
+// the build the page runs is held here to the reference compiler's: on valid
+// input, on hand-made awkward input and on thousands of mutations of both,
+// the two must give the same answer, byte for byte.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { before, test } from "node:test";
-import { b64Encode, type Bytes, concat, hex, sha256, utf8Encode } from "../../web/js/bytes.js";
-import { inclusionProof, rootFromLeafHashes } from "../../web/js/merkle.js";
-import { resultFromInspection } from "../../web/js/goengine.js";
-import { type CheckpointResult, newVerifier, verifyCheckpoint } from "../../web/js/note.js";
-import { ALG_ED25519, ALG_ED25519_COSIG, ALG_MLDSA44, parsePolicy } from "../../web/js/policy.js";
+import { b64Encode, type Bytes, sha256, utf8Encode } from "../../web/js/bytes.js";
 import { POLICY_TEXT } from "../../web/js/policy_data.js";
-import { formatTlogProof, parseTlogProof } from "../../web/js/proof.js";
-import { NoteKey } from "../e2e/testlog.js";
-import { loadOracle, type Oracle, type OracleCheckpoint, type OraclePolicy } from "./oracle.js";
+import type { Call } from "../../web/js/verifier.js";
+import { loadWasm } from "../../tools/wasm.js";
+import { ALG_ED25519, ALG_ED25519_COSIG, ALG_MLDSA44, NoteKey } from "../e2e/testlog.js";
 
 const testdata = (f: string) => readFileSync(new URL("../testdata/" + f, import.meta.url));
 const POLICY = testdata("prod-verifier-668ba3c.policy").toString();
 const CHECKPOINT = testdata("checkpoint-5522.txt").toString();
 
-let oracle: Oracle;
-before(async () => { oracle = await loadOracle(); });
+let go: Call;
+let tinygo: Call;
+before(async () => {
+  const env = (name: string) => process.env[name] ?? assert.fail(`${name} must be set`);
+  go = await loadWasm(env("VERIFIER_GO_WASM"), env("VERIFIER_GO_EXEC"));
+  tinygo = await loadWasm(env("VERIFIER_TINYGO_WASM"), env("VERIFIER_TINYGO_EXEC"));
+});
+
+/** Asks both builds the same question, insists on the same answer, and returns it. */
+async function both<T>(fn: string, ...args: unknown[]): Promise<T> {
+  const [a, b] = [await go(fn, ...args), await tinygo(fn, ...args)];
+  if (a !== b) {
+    const input = args.map((x) => (typeof x === "string" ? x : `<${String(x).slice(0, 40)}>`)).join(", ");
+    assert.fail(`${fn}: the builds disagree\n  go:     ${a.slice(0, 600)}\n  tinygo: ${b.slice(0, 600)}\n  input:  ${input.slice(0, 600)}`);
+  }
+  return JSON.parse(a) as T;
+}
 
 // ---------------------------------------------------------------------------
 // Generating input
@@ -90,101 +100,7 @@ function editSignature(checkpoint: string, line: number, edit: (sig: Buffer) => 
 }
 
 // ---------------------------------------------------------------------------
-// Comparing
-
-/** Disagreements seen, for a readable failure; and deliberate ones, by reason. */
-class Tally {
-  agreed = 0;
-  readonly stricter = new Map<string, number>();
-  readonly failures: string[] = [];
-
-  fail(what: string, input: string, detail: string): void {
-    if (this.failures.length < 12) this.failures.push(`${what}\n  ${detail}\n  input: ${JSON.stringify(input.length > 400 ? input.slice(0, 400) + "…" : input)}`);
-    else if (this.failures.length === 12) this.failures.push("… and more");
-  }
-
-  finish(name: string): void {
-    const explained = [...this.stricter].map(([reason, n]) => `${n} stricter (${reason})`).join(", ");
-    console.log(`${name} [${oracle.variant}]: ${this.agreed} agree${explained ? ", " + explained : ""}`);
-    assert.equal(this.failures.length, 0, `${name}: the TypeScript and Go implementations disagree:\n\n${this.failures.join("\n\n")}`);
-  }
-}
-
-/**
- * Where the page rejects what the Go code accepts, on purpose. Each entry
- * matches the page's own explanation of why it rejected.
- */
-const STRICTER: [reason: string, pattern: RegExp][] = [
-  // tlog-checkpoint: "There MUST NOT be multiple signature lines with both
-  // the same key name and the same key id." sumdb/note drops repeats instead.
-  ["repeated signature line", /more than one signature line/],
-  // The formats require canonical base64. Go's decoder accepts stray bits in
-  // the final character.
-  ["non-canonical base64", /non-canonical base64/],
-  // signed-note: a key name has no "+"; sumdb/note only checks names it knows.
-  ["malformed signature line", /bad signature line/],
-  // tlog-checkpoint: extension lines are non-empty. sumdb/note takes the
-  // last blank line as the separator, so an earlier one is an empty line.
-  ["empty or control-character extension line", /bad extension line/],
-];
-
-const stricterReason = (explanation: string, reasons = STRICTER): string | null =>
-  reasons.find(([, pattern]) => pattern.test(explanation))?.[0] ?? null;
-
-/** The same, for policies. */
-const POLICY_STRICTER: [reason: string, pattern: RegExp][] = [
-  // signed-note: a key ID is the first four bytes of SHA-256(name, newline,
-  // type, key), in eight lower-case hex digits. For cosignature keys the Go
-  // code checks only that eight characters are there, and uses the ID it
-  // computes itself.
-  ["key ID is not the one the name and key imply", /key id mismatch|malformed key id/],
-  // Go accepts anything url.Parse does, relative references included.
-  ["URL is not absolute http(s)", /not an absolute http\(s\) URL/],
-];
-
-// ---------------------------------------------------------------------------
 // Policies
-
-type PolicyView = Omit<OraclePolicy, "error"> | { error: string };
-
-/** The page's reading of a policy, including the per-key checks it makes before using one. */
-async function tsPolicy(text: string): Promise<PolicyView> {
-  try {
-    const p = parsePolicy(text);
-    for (const { vkey } of [...p.logs, ...p.witnesses]) await newVerifier(vkey);
-    return {
-      logs: p.logs.map((l) => l.vkey.text),
-      witnesses: p.witnesses.map((w) => ({ name: w.name, vkey: w.vkey.text })),
-      groups: p.groups.map((g) => ({ name: g.name, threshold: g.threshold, members: g.members })),
-      quorum: p.quorum,
-    };
-  } catch (e) {
-    return { error: e instanceof Error ? e.message : String(e) };
-  }
-}
-
-async function comparePolicy(tally: Tally, text: string): Promise<void> {
-  const go = oracle.parsePolicy(text);
-  const ts = await tsPolicy(text);
-  const goAccepts = go.error === undefined;
-  const tsAccepts = !("error" in ts);
-  if (tsAccepts && !goAccepts) return tally.fail("the page accepts a policy Go rejects", text, `go: ${go.error}`);
-  if ("error" in ts && goAccepts) {
-    const reason = stricterReason(ts.error, POLICY_STRICTER);
-    if (reason === null) return tally.fail("the page rejects a policy Go accepts", text, `page: ${ts.error}`);
-    tally.stricter.set(reason, (tally.stricter.get(reason) ?? 0) + 1);
-    return;
-  }
-  if (goAccepts && tsAccepts) {
-    const { error: _error, ...goView } = go;
-    try {
-      assert.deepEqual(ts, goView);
-    } catch {
-      return tally.fail("the page and Go read a policy differently", text, `go: ${JSON.stringify(goView)}\n  page: ${JSON.stringify(ts)}`);
-    }
-  }
-  tally.agreed++;
-}
 
 /** Policies written to probe particular rules, built around one real witness and one real log key. */
 function handMadePolicies(): string[] {
@@ -230,86 +146,49 @@ function handMadePolicies(): string[] {
   ];
 }
 
-test("policies are read as the Go implementation reads them", async () => {
-  const tally = new Tally();
-  for (const text of [POLICY, POLICY_TEXT, ...handMadePolicies()]) await comparePolicy(tally, text);
+test("the builds read policies alike", async () => {
+  let accepted = 0;
+  const cases = [POLICY, POLICY_TEXT, ...handMadePolicies()];
   const r = random(1);
   // A shorter policy keeps mutations from landing mostly in key material.
   const small = POLICY.split("\n").filter((l) => !l.startsWith("#") && l !== "").filter((l, i) => i < 3 || !l.startsWith("log ")).join("\n") + "\n";
   for (let i = 0; i < 1500; i++) {
     let text = pick(r, [POLICY, small, small]);
     for (let n = 1 + int(r, 3); n > 0; n--) text = r() < 0.6 ? mutateLines(r, text) : mutateText(r, text);
-    await comparePolicy(tally, text);
+    cases.push(text);
   }
-  tally.finish("policies");
+  for (const text of cases) {
+    if ((await both<{ error?: string }>("tlogPolicy", JSON.stringify(text))).error === undefined) accepted++;
+  }
+  console.log(`policies: ${cases.length} read alike, ${accepted} of them accepted`);
+  // Both verdicts must be well represented for agreement to mean anything.
+  assert.ok(accepted > 100 && cases.length - accepted > 100);
 });
 
 // ---------------------------------------------------------------------------
 // Checkpoints
 
-interface CheckpointView {
-  ok: boolean;
-  origin?: string;
-  size?: number;
-  hash?: string;
-  logSigned: boolean;
-  quorum: boolean;
-  witnesses: string[];
-  /** Why the page did not accept, in its own words. */
-  explanation: string;
-  /** The page could not read it as a signed checkpoint at all. */
-  malformed: boolean;
-}
+interface Verdict { malformed?: string; ok: boolean }
 
-async function tsCheckpoint(policyText: string, raw: string): Promise<CheckpointView> {
-  try {
-    const r = await verifyCheckpoint(parsePolicy(policyText), raw);
-    return {
-      ok: r.ok,
-      origin: r.checkpoint.origin,
-      size: r.checkpoint.size,
-      hash: b64Encode(r.checkpoint.hash),
-      logSigned: r.logSigned,
-      quorum: r.quorum.satisfied,
-      witnesses: [...new Set(r.signatures.filter((s) => s.status === "valid" && s.witness !== null).map((s) => s.witness!))].sort(),
-      explanation: r.problems.join("; "),
-      malformed: false,
-    };
-  } catch (e) {
-    return { ok: false, logSigned: false, quorum: false, witnesses: [], explanation: e instanceof Error ? e.message : String(e), malformed: true };
+/** Judges checkpoints under policies with both builds, and counts the verdicts. */
+class Verdicts {
+  ok = 0;
+  refused = 0;
+  malformed = 0;
+
+  async judge(policy: string, checkpoint: string, expectedOrigin: string): Promise<void> {
+    const v = await both<Verdict>("tlogCheckpoint", JSON.stringify({ policy, checkpoint, expectedOrigin }));
+    if (v.malformed !== undefined) this.malformed++;
+    else if (v.ok) this.ok++;
+    else this.refused++;
+  }
+
+  toString(): string {
+    return `${this.ok} accepted, ${this.refused} refused, ${this.malformed} not checkpoints`;
   }
 }
 
-async function compareCheckpoint(tally: Tally, policyText: string, raw: string): Promise<void> {
-  const go: OracleCheckpoint = oracle.verifyCheckpoint(policyText, raw);
-  assert.equal(go.policyError, undefined, "the test's policy must be valid");
-  const ts = await tsCheckpoint(policyText, raw);
-
-  if (ts.ok && !go.ok) return tally.fail("the page accepts a checkpoint Go rejects", raw, `go: ${go.error}`);
-  if (!ts.ok && go.ok) {
-    const reason = stricterReason(ts.explanation);
-    if (reason === null) return tally.fail("the page rejects a checkpoint Go accepts", raw, `page: ${ts.explanation}`);
-    tally.stricter.set(reason, (tally.stricter.get(reason) ?? 0) + 1);
-    return;
-  }
-  if (ts.ok) {
-    if (ts.origin !== go.origin || ts.size !== go.size || ts.hash !== go.hash) {
-      return tally.fail("the page and Go read a checkpoint differently", raw,
-        `go: ${go.origin} ${go.size} ${go.hash}; page: ${ts.origin} ${ts.size} ${ts.hash}`);
-    }
-  }
-  // Short of the verdict, the two halves and the cosigners must match too,
-  // wherever the page could read the checkpoint at all. (Go reports on the
-  // signatures of some texts that are not checkpoints.)
-  if (!ts.malformed && (ts.logSigned !== go.logSigned || ts.quorum !== go.quorum || ts.witnesses.join() !== go.witnesses.join())) {
-    return tally.fail("the page and Go disagree about a checkpoint's signatures", raw,
-      `go: log ${go.logSigned}, quorum ${go.quorum}, witnesses [${go.witnesses}]\n  page: log ${ts.logSigned}, quorum ${ts.quorum}, witnesses [${ts.witnesses}] (${ts.explanation})`);
-  }
-  tally.agreed++;
-}
-
-test("a real checkpoint, altered every which way, is judged as the Go implementation judges it", async () => {
-  const tally = new Tally();
+test("the builds judge a real checkpoint, altered every which way, alike", async () => {
   const split = CHECKPOINT.lastIndexOf("\n\n");
   const body = CHECKPOINT.slice(0, split + 1);
   const sigs = CHECKPOINT.slice(split + 2).split("\n").filter((l) => l !== "");
@@ -364,12 +243,17 @@ test("a real checkpoint, altered every which way, is judged as the Go implementa
   // Mutations of the short first lines, which random positions rarely hit.
   for (let i = 0; i < 300; i++) cases.push(withBody(mutateText(r, body)));
 
-  for (const raw of cases) await compareCheckpoint(tally, POLICY, raw);
-  tally.finish(`checkpoints from the real log (${cases.length})`);
+  const verdicts = new Verdicts();
+  for (const raw of cases) await verdicts.judge(POLICY, raw, "paic.google.com/log/0");
+  await verdicts.judge(POLICY, CHECKPOINT, "paic.google.com/log/1");
+  await verdicts.judge(POLICY, CHECKPOINT, "");
+  await verdicts.judge("quorum none\n", CHECKPOINT, "");
+  await verdicts.judge("frobnicate\n", CHECKPOINT, "");
+  console.log(`checkpoints from the real log: ${cases.length + 4} judged alike (${verdicts})`);
+  assert.ok(verdicts.ok > 20 && verdicts.refused > 100 && verdicts.malformed > 100);
 });
 
-test("checkpoints signed for the purpose are judged as the Go implementation judges them", async () => {
-  const tally = new Tally();
+test("the builds judge checkpoints signed for the purpose alike", async () => {
   const origin = "test.example/log";
   const logs = [await NoteKey.generate(origin, ALG_ED25519), await NoteKey.generate(origin, ALG_MLDSA44)];
   const otherLog = await NoteKey.generate("test.example/other", ALG_ED25519);
@@ -444,163 +328,65 @@ test("checkpoints signed for the purpose are judged as the Go implementation jud
   const r = random(3);
   for (let i = 0; i < 250; i++) cases.push(r() < 0.5 ? mutateLines(r, a) : mutateText(r, a));
 
+  const verdicts = new Verdicts();
   for (const policy of policies) {
-    for (const raw of cases) await compareCheckpoint(tally, policy, raw);
+    for (const raw of cases) await verdicts.judge(policy, raw, origin);
   }
-  tally.finish(`checkpoints signed for the purpose (${cases.length} under ${policies.length} policies)`);
+  console.log(`checkpoints signed for the purpose: ${cases.length} under ${policies.length} policies judged alike (${verdicts})`);
+  assert.ok(verdicts.ok > 100 && verdicts.refused > 100 && verdicts.malformed > 100);
 });
 
 // ---------------------------------------------------------------------------
-// Proofs
+// The Merkle tree and proofs
 
-test("tlog-proofs are written and read as the Go implementation writes and reads them", async () => {
-  const tally = new Tally();
-  const leaves = concat(...await Promise.all(Array.from({ length: 40 }, (_, i) => sha256(utf8Encode(`leaf ${i}`)))));
-  const hashes = await inclusionProof(leaves, 17, 40);
-  const proof = { index: 17, hashes, checkpoint: CHECKPOINT };
-  const text = formatTlogProof(proof);
-
-  // Written the same...
-  assert.equal(oracle.formatProof({ index: 17, hashes: hashes.map((h) => b64Encode(h)), checkpoint: CHECKPOINT }), text);
-  for (const p of [{ index: 0, hashes: [] as Bytes[], checkpoint: CHECKPOINT }, { index: 2 ** 40, hashes: hashes.slice(0, 1), checkpoint: "c\n" }]) {
-    assert.equal(oracle.formatProof({ ...p, hashes: p.hashes.map((h) => b64Encode(h)) }), formatTlogProof(p));
-  }
-
-  // ...and read the same, or, where the page is stricter, refused.
-  const compare = (input: string) => {
-    const go = oracle.parseProof(input);
-    let ts: { index: number; hashes: string[]; checkpoint: string } | { error: string };
-    try {
-      const p = parseTlogProof(input);
-      ts = { index: p.index, hashes: p.hashes.map((h) => b64Encode(h)), checkpoint: p.checkpoint };
-    } catch (e) {
-      ts = { error: e instanceof Error ? e.message : String(e) };
-    }
-    if (!("error" in ts) && go.error !== undefined) return tally.fail("the page reads a proof Go rejects", input, `go: ${go.error}`);
-    if ("error" in ts) {
-      // The page writes one form of proof and reads only that. Go's reader
-      // also takes "extra" data and is forgiving about the rest.
-      tally.stricter.set("not the form of proof the page writes", (tally.stricter.get("not the form of proof the page writes") ?? 0) + (go.error === undefined ? 1 : 0));
-      if (go.error !== undefined) tally.agreed++;
-      return;
-    }
-    if (ts.index !== go.index || ts.hashes.join() !== go.hashes.join() || ts.checkpoint !== go.checkpoint) {
-      return tally.fail("the page and Go read a proof differently", input, `go: ${JSON.stringify(go).slice(0, 300)}\n  page: ${JSON.stringify(ts).slice(0, 300)}`);
-    }
-    tally.agreed++;
-  };
-  compare(text);
-  compare(text.replace("index 17", "extra AAAA\nindex 17"));
-  compare(text.replace("index 17", "index 017"));
-  compare(text.replace("index 17", "index -1"));
-  compare(text.replace("index 17", "index 18446744073709551616"));
-  compare(text.replace("@v1", "@v2"));
-  compare(text.replace(/\n\n/, "\n"));
-  const short = formatTlogProof({ index: 17, hashes, checkpoint: "origin\n1\nAAAA\n\n— k AAAAAAAA\n" });
-  const r = random(4);
-  for (let i = 0; i < 1500; i++) compare(r() < 0.5 ? mutateLines(r, short) : mutateText(r, short));
-  tally.finish("proofs");
-});
-
-// ---------------------------------------------------------------------------
-// The Merkle tree
-
-test("tree heads and inclusion proofs equal the Go implementation's", async () => {
+test("the builds hash trees, and write and check proofs, alike", async () => {
   const r = random(5);
   const leaves = new Uint8Array(700 * 32);
   for (let i = 0; i < leaves.length; i++) leaves[i] = int(r, 256);
-  const sizes = [...Array.from({ length: 34 }, (_, i) => i + 1), 63, 64, 65, 100, 127, 128, 129, 255, 256, 257, 300, 511, 512, 513, 700];
-  let compared = 0;
+  const key = await NoteKey.generate("test.example/log", ALG_ED25519);
+  const policy = `log ${key.vkey}\nquorum none\n`;
+  const hexOf = (b: Bytes) => Buffer.from(b).toString("hex");
+
+  const sizes = [0, ...Array.from({ length: 34 }, (_, i) => i + 1), 63, 64, 65, 100, 127, 128, 129, 255, 256, 257, 300, 511, 512, 513, 700];
+  let proofs = 0;
+  let last = "";
+  let lastLeaf = "";
   for (const size of sizes) {
-    const indices = new Set([0, size - 1, Math.floor(size / 2), int(r, size), int(r, size), int(r, size)]);
-    for (const index of indices) {
-      const go = oracle.tree(leaves, size, index);
-      assert.equal(go.error, undefined);
-      assert.equal(hex(await rootFromLeafHashes(leaves, size)), go.root, `root of ${size}`);
-      assert.deepEqual((await inclusionProof(leaves, index, size)).map((h) => hex(h)), go.proof, `proof of ${index} in ${size}`);
-      compared++;
+    const tree = await both<{ error?: string; root: string }>("tlogTree", leaves.subarray(0, size * 32), size);
+    assert.equal(tree.error, undefined);
+    if (size === 0) continue;
+    const root = Uint8Array.from(Buffer.from(tree.root, "base64"));
+    const text = `test.example/log\n${size}\n${tree.root}\n`;
+    const checkpoint = text + "\n" + await key.sign({ origin: "test.example/log", size, root, text }, 0);
+    for (const index of new Set([0, size - 1, Math.floor(size / 2), int(r, size), int(r, size)])) {
+      const { proof } = await both<{ proof: string }>("tlogProve", leaves.subarray(0, size * 32), size, index, checkpoint);
+      const check = (leaf: number, text = proof) =>
+        both<{ ok: boolean; error?: string }>("tlogCheckProof", JSON.stringify({ policy, proof: text, leafHash: hexOf(leaves.subarray(leaf * 32, leaf * 32 + 32)) }));
+      // A proof proves its own leaf and no other.
+      assert.deepEqual(await check(index), { ok: true, index, origin: "test.example/log", size });
+      if (size > 1) assert.equal((await check((index + 1) % size)).ok, false);
+      proofs++;
+      last = proof;
+      lastLeaf = hexOf(leaves.subarray(index * 32, index * 32 + 32));
     }
   }
-  console.log(`tree heads and inclusion proofs [${oracle.variant}]: ${compared} agree`);
-});
+  // Asking for what does not exist.
+  await both("tlogTree", leaves.subarray(0, 64), 3);
+  await both("tlogProve", leaves, 700, 700, "c\n");
+  await both("tlogProve", leaves, 700, -1, "c\n");
 
-// ---------------------------------------------------------------------------
-// The page's Go engine
-
-test("the page's Go engine and its TypeScript verifier give the page the same result", async () => {
-  // engine=go has the page take its checkpoint result from the Go code
-  // (goengine.ts). Whatever the page would show must not depend on the engine.
-  const policy = parsePolicy(POLICY);
-  const options = { expectedOrigin: "paic.google.com/log/0" };
-  const split = CHECKPOINT.lastIndexOf("\n\n");
-  const body = CHECKPOINT.slice(0, split + 1);
-  const sigs = CHECKPOINT.slice(split + 2).split("\n").filter((l) => l !== "");
-  const withSigs = (lines: string[], text = body) => text + "\n" + lines.map((l) => l + "\n").join("");
-
-  const cases: string[] = [CHECKPOINT];
-  for (let i = 0; i < sigs.length; i++) {
-    cases.push(withSigs(sigs.filter((_, j) => j !== i)));
-    cases.push(withSigs([sigs[i]!]));
-    cases.push(withSigs([...sigs, sigs[i]!]));
-    for (const at of [0, 5, 12, -1]) {
-      cases.push(editSignature(CHECKPOINT, i, (b) => { b[at < 0 ? b.length + at : at]! ^= 1; }));
-    }
+  // Proofs that are not quite proofs.
+  const leaf = lastLeaf;
+  assert.equal((await both<{ ok: boolean }>("tlogCheckProof", JSON.stringify({ policy, proof: last, leafHash: leaf }))).ok, true);
+  let refused = 0;
+  for (let i = 0; i < 1500; i++) {
+    const text = r() < 0.5 ? mutateLines(r, last) : mutateText(r, last);
+    if (!(await both<{ ok: boolean }>("tlogCheckProof", JSON.stringify({ policy, proof: text, leafHash: leaf }))).ok) refused++;
   }
-  cases.push(withSigs([]), withSigs(sigs.slice(0, 2)), withSigs(sigs.slice(2)), withSigs([...sigs].reverse()),
-    withSigs(sigs, body.replace("5522", "5523")), withSigs(sigs, body.replace("log/0", "log/1")), withSigs(sigs, body + "extension\n"),
-    CHECKPOINT + "— example.com/witness " + Buffer.alloc(76, 7).toString("base64") + "\n");
-  const r = random(6);
-  for (let i = 0; i < 150; i++) cases.push(mutateLines(r, CHECKPOINT));
-
-  /** What the page displays of a result, in comparable form. */
-  const shown = (res: CheckpointResult) => ({
-    ok: res.ok,
-    origin: res.checkpoint.origin,
-    size: res.checkpoint.size,
-    hash: b64Encode(res.checkpoint.hash),
-    extensions: res.checkpoint.extensions,
-    text: res.text,
-    signatures: res.signatures.map((s) => ({ ...s, timestamp: s.timestamp?.toString() ?? null })),
-    logSigned: res.logSigned,
-    quorum: res.quorum,
-    quorumPossible: res.quorumPossible,
-    witnessedAt: res.witnessedAt?.toString() ?? null,
-    extensionsAuthenticated: res.extensionsAuthenticated,
-    problems: res.problems,
-    warnings: res.warnings,
-  });
-
-  let same = 0;
-  let malformed = 0;
-  let repeats = 0;
-  let refusedByGo = 0;
-  for (const raw of cases) {
-    let ts: CheckpointResult | Error;
-    let go: CheckpointResult | Error;
-    try { ts = await verifyCheckpoint(policy, raw, options); } catch (e) { ts = e as Error; }
-    try { go = resultFromInspection(policy, oracle.inspectCheckpoint(POLICY, raw), options); } catch (e) { go = e as Error; }
-    if (ts instanceof Error) {
-      // The TypeScript refuses some texts outright that Go reads; then Go must at least not accept them,
-      // unless it is one of the forms the page is deliberately stricter about.
-      if (!(go instanceof Error) && go.ok) assert.notEqual(stricterReason(ts.message), null, `Go engine accepts what the page refuses (${ts.message}): ${JSON.stringify(raw.slice(0, 200))}`);
-      malformed++;
-      continue;
-    }
-    if (go instanceof Error) {
-      // Go may refuse outright what the TypeScript reads and then rejects; never what it accepts.
-      assert.ok(!ts.ok, `Go engine refuses what the page accepts: ${go.message}\n${JSON.stringify(raw.slice(0, 300))}`);
-      refusedByGo++;
-      continue;
-    }
-    // Go's note reader drops a signature line identical to an earlier one, so
-    // its engine never sees the repeat that the TypeScript rejects.
-    if (ts.problems.some((p) => /more than one signature line/.test(p)) && go.signatures.length < ts.signatures.length) {
-      repeats++;
-      continue;
-    }
-    assert.deepEqual(shown(go), shown(ts), JSON.stringify(raw.slice(0, 300)));
-    same++;
+  for (const text of [last.replace(/index \d+/, "extra AAAA\n$&"), last.replace(/index /, "index 0"), last.replace(/index \d+/, "index -1"),
+    last.replace(/index \d+/, "index 18446744073709551616"), last.replace("@v1", "@v2"), last.replace(/\n\n/, "\n"), ""]) {
+    await both("tlogCheckProof", JSON.stringify({ policy, proof: text, leafHash: leaf }));
   }
-  console.log(`the page's two engines [${oracle.variant}]: ${same} identical results, ${malformed} refused by the TypeScript, ${repeats} with a repeated line only it sees, ${refusedByGo} refused by Go alone`);
-  assert.ok(same > 100);
+  console.log(`trees and proofs: ${sizes.length} trees and ${proofs} proofs alike; ${refused} of 1500 altered proofs refused alike`);
+  assert.ok(refused > 1000 && refused < 1500);
 });

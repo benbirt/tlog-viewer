@@ -97,9 +97,13 @@
 <footer class="wrap foot">
   <p>Trust policy: <span id="policy-source"></span>. Log and witness keys are compiled into this page.</p>
   <p>This page: <span id="build"></span></p>
-  <p>Third-party code: <a href="https://github.com/panva/jose" rel="noopener noreferrer" target="_blank">jose</a> reads PEM keys and
+  <p>Checkpoints, cosignatures, the Merkle tree and proofs are checked by the Go implementations of the formats,
+    <a href="https://github.com/transparency-dev/formats" rel="noopener noreferrer" target="_blank">transparency-dev/formats</a> and
+    <a href="https://pkg.go.dev/golang.org/x/mod/sumdb/tlog" rel="noopener noreferrer" target="_blank">sumdb/tlog</a>,
+    compiled to WebAssembly (<a href="wasm/NOTICE.txt">licences</a>). Entry signatures are checked by the browser, after
+    <a href="https://github.com/panva/jose" rel="noopener noreferrer" target="_blank">jose</a> reads PEM keys and
     <a href="https://github.com/paulmillr/noble-curves" rel="noopener noreferrer" target="_blank">@noble/curves</a> parses DER signatures
-    (<a href="third-party-licenses.txt">licences</a>). All cryptographic verification is done by the browser.</p>
+    (<a href="third-party-licenses.txt">licences</a>).</p>
   <p>An entry's signature check shows only that the endorsement was signed by the key recorded with it.
     This page has no list of endorser keys, so it does not check whether that key is trusted.</p>
   <details id="debug">
@@ -107,7 +111,6 @@
     <p>Each option simulates a failure inside this browser to show how the page responds. None can
       make a check pass. The selection is kept in the URL so the view can be shared.</p>
     <ul id="debug-list"></ul>
-    <p id="engine-choice"></p>
   </details>
 </footer>
 </body>

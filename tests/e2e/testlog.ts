@@ -6,9 +6,14 @@
 import {
   b64Encode, type Bytes, concat, hex, sha256, uint64be, utf8Encode,
 } from "../../web/js/bytes.js";
-import { interiorTileHashes, leafHash, rootFromLeafHashes } from "../../web/js/merkle.js";
-import { ALG_ED25519, ALG_ED25519_COSIG, ALG_MLDSA44 } from "../../web/js/policy.js";
+import { leafHash } from "../../web/js/ingest.js";
 import { TILE_WIDTH, tilePath, tilesForSize } from "../../web/js/tiles.js";
+import type { Verifier } from "../../web/js/verifier.js";
+
+// The signature type bytes that begin a verifier key (c2sp.org/signed-note).
+export const ALG_ED25519 = 0x01;
+export const ALG_ED25519_COSIG = 0x04;
+export const ALG_MLDSA44 = 0x06;
 
 const bytes = (b: ArrayBuffer | Uint8Array): Bytes => new Uint8Array(b as ArrayBuffer);
 
@@ -99,6 +104,8 @@ export class TestLog {
   constructor(
     readonly origin: string, private readonly logKeys: NoteKey[],
     private readonly witnesses: NoteKey[], private readonly endorsers: Endorser[],
+    /** Hashes the tree: the page's own verifier, so the fixture is right only if it is. */
+    private readonly verifier: Verifier,
   ) {}
 
   get size(): number {
@@ -149,7 +156,7 @@ export class TestLog {
 
   /** A log with the same keys and the first `size` entries, to grow apart from this one. */
   fork(size: number = this.size): TestLog {
-    const copy = new TestLog(this.origin, this.logKeys, this.witnesses, this.endorsers);
+    const copy = new TestLog(this.origin, this.logKeys, this.witnesses, this.endorsers, this.verifier);
     copy.entries.push(...this.entries.slice(0, size));
     copy.leafHashes = this.leafHashes.slice(0, size * 32);
     return copy;
@@ -170,7 +177,7 @@ export class TestLog {
   async files(options: { age?: number; witnesses?: number } = {}): Promise<Map<string, Bytes>> {
     const size = this.size;
     const out = new Map<string, Bytes>();
-    const root = await rootFromLeafHashes(this.leafHashes, size);
+    const { root, interior } = await this.verifier.tree(this.leafHashes, size);
     const text = `${this.origin}\n${size}\n${b64Encode(root)}\n`;
     const time = Math.floor(Date.now() / 1000) - (options.age ?? 30);
     const signers = [...this.logKeys, ...this.witnesses.slice(0, options.witnesses ?? this.witnesses.length)];
@@ -183,11 +190,7 @@ export class TestLog {
       out.set(tilePath("entries", t.index, t.width), concat(...this.entries.slice(start, start + t.width)
         .flatMap((e) => [Uint8Array.of(e.length >> 8, e.length & 0xff), e])));
     }
-    for (const [i, hashes] of (await interiorTileHashes(this.leafHashes, size)).entries()) {
-      for (const t of tilesForSize(hashes.length / 32)) {
-        out.set(tilePath(i + 1, t.index, t.width), hashes.slice(t.index * TILE_WIDTH * 32, (t.index * TILE_WIDTH + t.width) * 32));
-      }
-    }
+    for (const t of interior) out.set(tilePath(t.level, t.index, t.width), t.data);
     return out;
   }
 }
@@ -197,7 +200,7 @@ export class TestLog {
  * ML-DSA-44, and the quorum is two of three witnesses, one of them ML-DSA-44,
  * so the tests meet the same mix of algorithms as production.
  */
-export async function buildWorld(): Promise<World> {
+export async function buildWorld(verifier: Verifier): Promise<World> {
   const main = "test.example/log/0";
   const empty = "test.example/log/1";
   const unpublished = "test.example/log/2";
@@ -220,8 +223,8 @@ export async function buildWorld(): Promise<World> {
   ].join("\n");
   return {
     policy,
-    main: new TestLog(main, mainKeys, witnesses, endorsers),
-    empty: new TestLog(empty, [emptyKey], witnesses, endorsers),
+    main: new TestLog(main, mainKeys, witnesses, endorsers, verifier),
+    empty: new TestLog(empty, [emptyKey], witnesses, endorsers, verifier),
     unpublished,
   };
 }

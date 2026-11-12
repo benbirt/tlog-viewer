@@ -1,16 +1,14 @@
-// A worker that does the hashing and checking of ingest.ts off the main
+// A worker that fetches and checks entry bundles (ingest.ts) off the main
 // thread. Requests and replies are plain data; see pool.ts for the other end.
 
 import type { Bytes } from "./bytes.js";
 import { faultById, faultyFetch } from "./faults.js";
-import { checkBundle, type CheckedEntry, hashTree } from "./ingest.js";
+import { checkBundle, type CheckedEntry } from "./ingest.js";
 import { HttpError, LogClient, type TileRef } from "./tiles.js";
 
-export type WorkerRequest =
-  | { op: "bundle"; base: string; fault: string | null; tile: TileRef; from: number; size: number; tileLeafHashes: Bytes }
-  | { op: "tree"; leafHashes: Bytes; size: number };
+export type WorkerRequest = { op: "bundle"; base: string; fault: string | null; tile: TileRef; from: number; size: number; tileLeafHashes: Bytes };
 
-export type WorkerResult = CheckedEntry[] | { root: Bytes; interior: Bytes[] };
+export type WorkerResult = CheckedEntry[];
 
 /** An error in a form that survives being posted between threads. */
 export interface WorkerError {
@@ -22,7 +20,6 @@ export interface WorkerError {
 export type WorkerReply = { id: number; result: WorkerResult } | { id: number; error: WorkerError };
 
 async function handle(req: WorkerRequest): Promise<WorkerResult> {
-  if (req.op === "tree") return hashTree(req.leafHashes, req.size);
   const fault = faultById(req.fault);
   const client = new LogClient(req.base, fault ? faultyFetch(fault, req.base) : undefined);
   return checkBundle(client, req.tile, req.from, req.size, req.tileLeafHashes, fault);
