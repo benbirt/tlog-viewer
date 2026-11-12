@@ -2,8 +2,8 @@ name: Update pins
 
 # Advances the versions that Dependabot cannot: the google-tlog-witness commit
 # that the trust policy is built from, the Bazel version, the Bazel modules,
-# the Node version and the TinyGo release. Each gets its own pull request, set to merge automatically once CI
-# passes.
+# the Node version and the rules_tinygo commit. Each gets its own pull
+# request, set to merge automatically once CI passes.
 #
 # The first is what brings new log instances, witnesses and key rotations to
 # the published viewer without anyone having to remember.
@@ -27,12 +27,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pin: [policy, bazel, modules, node, tinygo]
+        pin: [policy, bazel, modules, node, rules_tinygo]
     concurrency:
       group: update-pins-${{ matrix.pin }}
     env:
       BRANCH: update/${{ matrix.pin }}
-      GH_TOKEN: ${{ secrets.AUTOMATION_TOKEN }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -55,6 +54,8 @@ jobs:
 
       - name: Update the Bazel version
         if: matrix.pin == 'bazel'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           new=$(gh api repos/bazelbuild/bazel/releases/latest --jq .tag_name)
           [[ "$new" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::unexpected Bazel release '$new'"; exit 1; }
@@ -81,7 +82,7 @@ jobs:
               sed -i -E 's/^(bazel_dep\(name = "'"$name"'", version = ")[^"]+/\1'"$new"'/' MODULE.bazel
               changes+=("$name $old to $new")
             fi
-          done < <(sed -n -E 's/^bazel_dep\(name = "([^"]+)", version = "([^"]+)".*/\1 \2/p' MODULE.bazel | grep -v '^google-tlog-witness ')
+          done < <(sed -n -E 's/^bazel_dep\(name = "([^"]+)", version = "([^"]+)".*/\1 \2/p' MODULE.bazel | grep -v -E '^(google-tlog-witness|rules_tinygo) ')
           {
             echo "TITLE=Update Bazel modules"
             echo "BODY=$(IFS=,; echo "${changes[*]}" | sed 's/,/, /g')"
@@ -109,28 +110,21 @@ jobs:
             echo "BODY=Node $old to $new, the newest $major.x that rules_nodejs $rules can fetch."
           } >> "$GITHUB_ENV"
 
-      # TinyGo builds one of the two test oracles (//oracle). Its release is
-      # pinned by checksum, which has to be computed from the download.
-      - name: Update TinyGo
-        if: matrix.pin == 'tinygo'
+      # rules_tinygo builds one of the two test oracles (//oracle). Like
+      # google-tlog-witness it is not in a registry, so it is followed by commit.
+      - name: Update the rules_tinygo commit
+        if: matrix.pin == 'rules_tinygo'
         run: |
-          new=$(gh api repos/tinygo-org/tinygo/releases/latest --jq .tag_name)
-          new=${new#v}
-          [[ "$new" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::unexpected TinyGo release '$new'"; exit 1; }
-          old=$(sed -n -E 's|.*/download/v([0-9.]+)/tinygo.*|\1|p' MODULE.bazel)
-          [[ -n "$old" ]] || { echo "::error::no TinyGo pin in MODULE.bazel"; exit 1; }
-          if [ "$new" != "$old" ] && [ "$(printf '%s\n' "$old" "$new" | sort -V | tail -n 1)" = "$new" ]; then
-            url="https://github.com/tinygo-org/tinygo/releases/download/v$new/tinygo$new.linux-amd64.tar.gz"
-            sha=$(curl -fsSL "$url" | sha256sum | cut -d' ' -f1)
-            [[ "$sha" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::could not download $url"; exit 1; }
-            sed -i -E '/name = "tinygo_linux_amd64"/,/^    url = / {
-              s|sha256 = "[0-9a-f]{64}"|sha256 = "'"$sha"'"|
-              s|/download/v[0-9.]+/tinygo[0-9.]+\.linux-amd64|/download/v'"$new"'/tinygo'"$new"'.linux-amd64|
-            }' MODULE.bazel
-          fi
+          upstream=https://github.com/ptxmac/rules_tinygo
+          # Its default branch, whatever that is called.
+          new=$(git ls-remote "$upstream.git" HEAD | cut -f1)
+          [[ "$new" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::could not resolve upstream HEAD"; exit 1; }
+          old=$(sed -n -E '/module_name = "rules_tinygo"/,/^\)/ s/.*commit = "([0-9a-f]{40})".*/\1/p' MODULE.bazel)
+          [[ "$old" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no rules_tinygo pin in MODULE.bazel"; exit 1; }
+          sed -i -E '/module_name = "rules_tinygo"/,/^\)/ s/commit = "[0-9a-f]{40}"/commit = "'"$new"'"/' MODULE.bazel
           {
-            echo "TITLE=Update TinyGo to $new"
-            echo "BODY=https://github.com/tinygo-org/tinygo/releases/tag/v$new"
+            echo "TITLE=Update rules_tinygo to ${new:0:7}"
+            echo "BODY=Changes upstream: $upstream/compare/$old...$new"
           } >> "$GITHUB_ENV"
 
       - name: Check for changes
@@ -155,6 +149,10 @@ jobs:
 
       - name: Open or update the pull request
         if: steps.diff.outputs.changed == 'true'
+        # The personal token is given to this step alone, not to the steps
+        # above that run newly fetched code.
+        env:
+          GH_TOKEN: ${{ secrets.AUTOMATION_TOKEN }}
         run: |
           files=(MODULE.bazel MODULE.bazel.lock .bazelversion)
           # Leave an existing branch alone if it already holds this update on
