@@ -28,7 +28,7 @@ test("every import in the served modules names a file that exists", () => {
 
 test("the verifier is served where its worker looks for it, with its licences", () => {
   const site = new URL("../site/", import.meta.url);
-  const worker = readFileSync(new URL("js/goworker.js", site), "utf8");
+  const worker = readFileSync(new URL("js/gowasm.js", site), "utf8");
   const fetched = [...worker.matchAll(/new URL\("([^"]+)", import\.meta\.url\)/g)].map((m) => m[1]!);
   assert.deepEqual(fetched.sort(), ["../wasm/tinygo_wasm_exec.js", "../wasm/verifier.wasm"]);
   for (const f of fetched) assert.ok(existsSync(new URL(f, new URL("js/", site))), f);

@@ -11,28 +11,44 @@ interface GoRuntime {
   run(instance: WebAssembly.Instance): Promise<void>;
 }
 
+const runtimes = new Map<string, new () => GoRuntime>();
+
+/**
+ * Go's and TinyGo's runtime scripts each define a global class, Go, when
+ * first imported. This takes it off the global and keeps it by script.
+ */
+async function runtimeClass(exec: string): Promise<new () => GoRuntime> {
+  const url = pathToFileURL(resolve(exec)).href;
+  let runtime = runtimes.get(url);
+  if (!runtime) {
+    const g = globalThis as unknown as Record<string, unknown>;
+    delete g.Go;
+    await import(url);
+    runtime = g.Go as new () => GoRuntime;
+    delete g.Go;
+    runtimes.set(url, runtime);
+  }
+  return runtime;
+}
+
 /**
  * Starts a build of the verifier with the runtime script that goes with its
  * compiler, and returns a way to call it. More than one build can be loaded
- * into the same process.
+ * into the same process. `prefix` begins the names of the module's functions.
  */
-export async function loadWasm(wasm: string, exec: string): Promise<Call> {
+export async function loadWasm(wasm: string, exec: string, prefix = "tlog"): Promise<Call> {
   const g = globalThis as unknown as Record<string, unknown>;
-  // Go's and TinyGo's runtime scripts each define a global class, Go.
-  delete g.Go;
-  await import(pathToFileURL(resolve(exec)).href);
-  const go = new (g.Go as new () => GoRuntime)();
-  delete g.Go;
+  const go = new (await runtimeClass(exec))();
   const { instance } = await WebAssembly.instantiate(readFileSync(resolve(wasm)), go.importObject);
   void go.run(instance); // runs for as long as the module serves calls
-  for (let i = 0; !g.tlogReady; i++) {
+  for (let i = 0; !g[prefix + "Ready"]; i++) {
     if (i > 500) throw new Error(`the WebAssembly module ${wasm} did not start`);
     await new Promise((r) => setTimeout(r, 10));
   }
   // Take the module's functions off the global, leaving it clear for another build.
-  const fns = new Map<string, (...args: unknown[]) => string>();
-  for (const name of Object.keys(g).filter((k) => /^tlog[A-Z]/.test(k))) {
-    if (typeof g[name] === "function") fns.set(name, g[name] as (...args: unknown[]) => string);
+  const fns = new Map<string, (...args: unknown[]) => unknown>();
+  for (const name of Object.keys(g).filter((k) => k.startsWith(prefix) && /^[A-Z]/.test(k.slice(prefix.length)))) {
+    if (typeof g[name] === "function") fns.set(name, g[name] as (...args: unknown[]) => unknown);
     delete g[name];
   }
   return async (fn, ...args) => {

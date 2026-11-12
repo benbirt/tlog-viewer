@@ -65,10 +65,4 @@ export async function sha256(bytes: Bytes): Promise<Bytes> {
   return new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
 }
 
-export function uint64be(n: number): Bytes {
-  const out = new Uint8Array(8);
-  new DataView(out.buffer).setBigUint64(0, BigInt(n));
-  return out;
-}
-
 export const view = (b: Bytes): DataView => new DataView(b.buffer, b.byteOffset, b.byteLength);

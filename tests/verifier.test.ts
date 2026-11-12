@@ -219,7 +219,7 @@ test("the tiles a log of a given size must serve above level 0", async () => {
   assert.deepEqual(await shape(tile0, 255), []);
   // 256 real leaves: one level-1 hash, as the log itself serves it.
   const one = (await verifier.tree(tile0, 256)).interior;
-  assert.deepEqual(one.map((t) => ({ ...t, data: hex(t.data) })), [{ level: 1, index: 0, width: 1, data: level1 }]);
+  assert.deepEqual(one.map((t) => ({ ...t, data: hex(t.data) })), [{ level: 1, index: 0, width: 1, data: level1, path: "tile/1/000.p/1" }]);
   // 600 leaves: two complete groups; the 88 left over belong to no tile hash.
   const leaves = new Uint8Array(600 * 32);
   for (let i = 0; i < leaves.length; i++) leaves[i] = (i * 7) & 0xff;

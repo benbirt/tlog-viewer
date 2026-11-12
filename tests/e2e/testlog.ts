@@ -3,60 +3,69 @@
 // run, so nothing signed is checked in, and able to grow, fork or misbehave
 // on demand, which a recording of the real log could not.
 
-import {
-  b64Encode, type Bytes, concat, hex, sha256, uint64be, utf8Encode,
-} from "../../web/js/bytes.js";
-import { leafHash } from "../../web/js/ingest.js";
-import { TILE_WIDTH, tilePath, tilesForSize } from "../../web/js/tiles.js";
-import type { Verifier } from "../../web/js/verifier.js";
+import { b64Encode, type Bytes, concat, hex, sha256, utf8Encode } from "../../web/js/bytes.js";
+import type { Call, Verifier } from "../../web/js/verifier.js";
+import { loadWasm } from "../../tools/wasm.js";
 
-// The signature type bytes that begin a verifier key (c2sp.org/signed-note).
-export const ALG_ED25519 = 0x01;
-export const ALG_ED25519_COSIG = 0x04;
-export const ALG_MLDSA44 = 0x06;
+// The kinds of note key the viewer verifies (tests/signer/main.go).
+export const ED25519 = "ed25519";
+export const ED25519_COSIGNATURE = "ed25519-cosignature";
+export const ML_DSA_44 = "ml-dsa-44";
+export type KeyKind = typeof ED25519 | typeof ED25519_COSIGNATURE | typeof ML_DSA_44;
 
-const bytes = (b: ArrayBuffer | Uint8Array): Bytes => new Uint8Array(b as ArrayBuffer);
+// Keys are made and checkpoints signed by the Go packages the verifier checks
+// them with, compiled to WebAssembly from //tests/signer.
+let signerModule: Promise<Call> | undefined;
+function signer(): Promise<Call> {
+  const { SIGNER_WASM: wasm, SIGNER_EXEC: exec } = process.env;
+  if (!wasm || !exec) throw new Error("SIGNER_WASM and SIGNER_EXEC must be set");
+  return (signerModule ??= loadWasm(wasm, exec, "signer"));
+}
+
+async function ask<T>(fn: string, request: unknown, time?: number): Promise<T> {
+  const call = await signer();
+  // The module does its work before the call returns, and reads the clock
+  // through Date, so a cosignature can be given any time by swapping Date
+  // for the length of the call.
+  const RealDate = Date;
+  if (time !== undefined) {
+    const ms = time * 1000;
+    globalThis.Date = class extends RealDate {
+      constructor() {
+        super(ms);
+      }
+      static override now(): number {
+        return ms;
+      }
+    } as DateConstructor;
+  }
+  let pending: Promise<unknown>;
+  try {
+    pending = call(fn, JSON.stringify(request));
+  } finally {
+    globalThis.Date = RealDate;
+  }
+  const reply = JSON.parse(await pending as string) as T & { error?: string };
+  if (reply.error !== undefined) throw new Error(`${fn}: ${reply.error}`);
+  return reply;
+}
 
 /** A note signing key of one of the three kinds the viewer verifies. */
 export class NoteKey {
-  private constructor(
-    readonly name: string, readonly alg: number, readonly publicKey: Bytes,
-    readonly keyId: Bytes, private readonly key: CryptoKey,
-  ) {}
+  private constructor(readonly name: string, readonly kind: KeyKind, readonly vkey: string, private readonly skey: string) {}
 
-  static async generate(name: string, alg: number): Promise<NoteKey> {
-    const algorithm = alg === ALG_MLDSA44 ? "ML-DSA-44" : "Ed25519";
-    const pair = await crypto.subtle.generateKey({ name: algorithm }, true, ["sign", "verify"]) as CryptoKeyPair;
-    // The raw key is the tail of its SubjectPublicKeyInfo.
-    const spki = bytes(await crypto.subtle.exportKey("spki", pair.publicKey));
-    const publicKey = spki.slice(spki.length - (alg === ALG_MLDSA44 ? 1312 : 32));
-    const id = (await sha256(concat(utf8Encode(name + "\n"), Uint8Array.of(alg), publicKey))).slice(0, 4);
-    return new NoteKey(name, alg, publicKey, id, pair.privateKey);
-  }
-
-  get vkey(): string {
-    return `${this.name}+${hex(this.keyId)}+${b64Encode(concat(Uint8Array.of(this.alg), this.publicKey))}`;
+  static async generate(name: string, kind: KeyKind): Promise<NoteKey> {
+    const { skey, vkey } = await ask<{ skey: string; vkey: string }>("signerKey", { name, kind });
+    return new NoteKey(name, kind, vkey, skey);
   }
 
   /** A signature line for a checkpoint, made at `time` (Unix seconds) where the kind records one. */
-  async sign(cp: { origin: string; size: number; root: Bytes; text: string }, time: number): Promise<string> {
-    let sig: Bytes;
-    if (this.alg === ALG_ED25519) {
-      sig = bytes(await crypto.subtle.sign({ name: "Ed25519" }, this.key, utf8Encode(cp.text)));
-    } else if (this.alg === ALG_ED25519_COSIG) {
-      const msg = utf8Encode(`cosignature/v1\ntime ${time}\n${cp.text}`);
-      sig = concat(uint64be(time), bytes(await crypto.subtle.sign({ name: "Ed25519" }, this.key, msg)));
-    } else {
-      const name = utf8Encode(this.name);
-      const origin = utf8Encode(cp.origin);
-      const msg = concat(
-        utf8Encode("subtree/v1\n\0"), Uint8Array.of(name.length), name, uint64be(time),
-        Uint8Array.of(origin.length), origin, uint64be(0), uint64be(cp.size), cp.root);
-      sig = concat(uint64be(time), bytes(await crypto.subtle.sign({ name: "ML-DSA-44" }, this.key, msg)));
-    }
-    return `— ${this.name} ${b64Encode(concat(this.keyId, sig))}\n`;
+  async sign(text: string, time: number): Promise<string> {
+    return (await ask<{ line: string }>("signerSign", { skey: this.skey, kind: this.kind, text }, time)).line;
   }
 }
+
+const bytes = (b: ArrayBuffer | Uint8Array): Bytes => new Uint8Array(b as ArrayBuffer);
 
 /** An endorser: an ECDSA P-256 key that signs statements. */
 class Endorser {
@@ -104,7 +113,7 @@ export class TestLog {
   constructor(
     readonly origin: string, private readonly logKeys: NoteKey[],
     private readonly witnesses: NoteKey[], private readonly endorsers: Endorser[],
-    /** Hashes the tree: the page's own verifier, so the fixture is right only if it is. */
+    /** Lays out and hashes the tree: the page's own verifier, so the fixture is right only if it is. */
     private readonly verifier: Verifier,
   ) {}
 
@@ -151,7 +160,7 @@ export class TestLog {
       });
       this.entries.push(utf8Encode(record));
     }
-    this.leafHashes = concat(...await Promise.all(this.entries.map((e) => leafHash(e))));
+    this.leafHashes = concat(...await Promise.all(this.entries.map((e) => this.verifier.leafHash(e))));
   }
 
   /** A log with the same keys and the first `size` entries, to grow apart from this one. */
@@ -167,7 +176,7 @@ export class TestLog {
     const record = JSON.parse(Buffer.from(this.entries[index]!).toString());
     record.apiVersion = "0.0.2";
     this.entries[index] = utf8Encode(JSON.stringify(record));
-    this.leafHashes = concat(...await Promise.all(this.entries.map((e) => leafHash(e))));
+    this.leafHashes = concat(...await Promise.all(this.entries.map((e) => this.verifier.leafHash(e))));
   }
 
   /**
@@ -178,19 +187,19 @@ export class TestLog {
     const size = this.size;
     const out = new Map<string, Bytes>();
     const { root, interior } = await this.verifier.tree(this.leafHashes, size);
+    const layout = await this.verifier.layout(0, size);
     const text = `${this.origin}\n${size}\n${b64Encode(root)}\n`;
     const time = Math.floor(Date.now() / 1000) - (options.age ?? 30);
     const signers = [...this.logKeys, ...this.witnesses.slice(0, options.witnesses ?? this.witnesses.length)];
-    const lines = await Promise.all(signers.map((k) => k.sign({ origin: this.origin, size, root, text }, time)));
-    out.set("checkpoint", utf8Encode(text + "\n" + lines.join("")));
+    const lines = await Promise.all(signers.map((k) => k.sign(text, time)));
+    out.set(layout.checkpoint, utf8Encode(text + "\n" + lines.join("")));
 
-    for (const t of tilesForSize(size)) {
-      const start = t.index * TILE_WIDTH;
-      out.set(tilePath(0, t.index, t.width), this.leafHashes.slice(start * 32, (start + t.width) * 32));
-      out.set(tilePath("entries", t.index, t.width), concat(...this.entries.slice(start, start + t.width)
+    for (const t of layout.tiles) {
+      out.set(t.path, this.leafHashes.slice(t.first * 32, (t.first + t.width) * 32));
+      out.set(t.entries, concat(...this.entries.slice(t.first, t.first + t.width)
         .flatMap((e) => [Uint8Array.of(e.length >> 8, e.length & 0xff), e])));
     }
-    for (const t of interior) out.set(tilePath(t.level, t.index, t.width), t.data);
+    for (const t of interior) out.set(t.path, t.data);
     return out;
   }
 }
@@ -204,13 +213,13 @@ export async function buildWorld(verifier: Verifier): Promise<World> {
   const main = "test.example/log/0";
   const empty = "test.example/log/1";
   const unpublished = "test.example/log/2";
-  const mainKeys = [await NoteKey.generate(main, ALG_ED25519), await NoteKey.generate(main, ALG_MLDSA44)];
-  const emptyKey = await NoteKey.generate(empty, ALG_ED25519);
-  const unpublishedKey = await NoteKey.generate(unpublished, ALG_ED25519);
+  const mainKeys = [await NoteKey.generate(main, ED25519), await NoteKey.generate(main, ML_DSA_44)];
+  const emptyKey = await NoteKey.generate(empty, ED25519);
+  const unpublishedKey = await NoteKey.generate(unpublished, ED25519);
   const witnesses = [
-    await NoteKey.generate("one.witness.example", ALG_ED25519_COSIG),
-    await NoteKey.generate("two.witness.example", ALG_MLDSA44),
-    await NoteKey.generate("three.witness.example", ALG_ED25519_COSIG),
+    await NoteKey.generate("one.witness.example", ED25519_COSIGNATURE),
+    await NoteKey.generate("two.witness.example", ML_DSA_44),
+    await NoteKey.generate("three.witness.example", ED25519_COSIGNATURE),
   ];
   const endorsers = [await Endorser.generate(), await Endorser.generate()];
   const policy = [

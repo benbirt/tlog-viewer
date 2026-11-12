@@ -1,9 +1,10 @@
 // The page's access to the verifier: the Go implementations of the
 // transparency formats (github.com/transparency-dev/formats and
 // golang.org/x/mod/sumdb/tlog), compiled to WebAssembly from //verifier and
-// run in a worker (goworker.ts). Policies, signed checkpoints, cosignatures,
-// the Merkle tree and proofs are all read, checked and written there. This
-// module only carries the questions and answers across.
+// run in workers (gowasm.ts). Policies, signed checkpoints, cosignatures, the
+// Merkle tree, proofs, and where a log keeps its tiles and what is in them are
+// all read, checked and written there. This module only carries the questions
+// and answers across.
 
 import { b64Decode, type Bytes, fromHex } from "./bytes.js";
 
@@ -79,11 +80,31 @@ export interface CheckpointResult {
   ok: boolean;
 }
 
+/** A level-0 tile of a log and the entry bundle beside it. */
+export interface TileRef {
+  index: number;
+  /** The number of hashes in the tile, and of entries in the bundle. */
+  width: number;
+  /** The index in the log of the tile's first leaf. */
+  first: number;
+  /** Where the tile and its entry bundle are served, relative to the log's URL. */
+  path: string;
+  entries: string;
+}
+
+export interface Layout {
+  /** Where the log serves its checkpoint. */
+  checkpoint: string;
+  tiles: TileRef[];
+}
+
 export interface Tile {
   level: number;
   index: number;
   width: number;
   data: Bytes;
+  /** Where the log serves the tile, relative to its URL. */
+  path: string;
 }
 
 export interface TreeHashes {
@@ -108,6 +129,15 @@ export interface Verifier {
    * `expectedOrigin`. Rejects if it is not a signed checkpoint at all.
    */
   checkpoint(policyText: string, raw: string, expectedOrigin: string): Promise<CheckpointResult>;
+  /**
+   * Where a log keeps the leaves from tree size `from` up to `size`: the
+   * tiles to fetch to follow a log that has grown, or all of them from 0.
+   */
+  layout(from: number, size: number): Promise<Layout>;
+  /** Splits an entry bundle into its entries. */
+  splitBundle(bundle: Bytes): Promise<Bytes[]>;
+  /** The hash of an entry as a leaf of the tree. */
+  leafHash(entry: Bytes): Promise<Bytes>;
   /** Hashes the tree of the first `size` leaf hashes. */
   tree(leafHashes: Bytes, size: number): Promise<TreeHashes>;
   /** Writes the c2sp.org/tlog-proof for one leaf under a signed checkpoint. */
@@ -116,8 +146,8 @@ export interface Verifier {
   checkProof(policyText: string, proof: string, leafHash: Bytes): Promise<ProofCheck>;
 }
 
-/** Calls one of the WebAssembly module's functions, returning its JSON reply. */
-export type Call = (fn: string, ...args: unknown[]) => Promise<string>;
+/** Calls one of the WebAssembly module's functions: most reply in JSON, a few with bytes. */
+export type Call = (fn: string, ...args: unknown[]) => Promise<unknown>;
 
 interface WireSignature {
   name: string;
@@ -131,7 +161,11 @@ interface WireSignature {
 
 /** A Verifier over some way of calling the WebAssembly module. */
 export function verifierOver(call: Call): Verifier {
-  const ask = async <T>(fn: string, ...args: unknown[]): Promise<T> => JSON.parse(await call(fn, ...args)) as T;
+  const ask = async <T>(fn: string, ...args: unknown[]): Promise<T> => {
+    const reply = await call(fn, ...args);
+    if (typeof reply !== "string") throw new Error(`the verifier gave no answer to ${fn}`);
+    return JSON.parse(reply) as T;
+  };
   return {
     async policy(text) {
       const out = await ask<PolicyInfo & { error?: string }>("tlogPolicy", JSON.stringify(text));
@@ -165,8 +199,18 @@ export function verifierOver(call: Call): Verifier {
       };
     },
 
+    layout: (from, size) => ask<Layout>("tlogLayout", JSON.stringify({ from, size })),
+
+    async splitBundle(bundle) {
+      const reply = await call("tlogBundle", bundle);
+      if (typeof reply === "string") throw new Error(`malformed entry bundle: ${(JSON.parse(reply) as { error: string }).error}`);
+      return reply as Bytes[];
+    },
+
+    leafHash: async (entry) => (await call("tlogLeafHash", entry)) as Bytes,
+
     async tree(leafHashes, size) {
-      const out = await ask<{ error?: string; root: string; interior: { level: number; index: number; width: number; data: string }[] }>(
+      const out = await ask<{ error?: string; root: string; interior: (Omit<Tile, "data"> & { data: string })[] }>(
         "tlogTree", leafHashes.subarray(0, size * 32), size);
       if (out.error !== undefined) throw new Error(`could not hash the tree: ${out.error}`);
       return { root: b64Decode(out.root), interior: out.interior.map((t) => ({ ...t, data: fromHex(t.data) })) };
@@ -185,10 +229,13 @@ export function verifierOver(call: Call): Verifier {
   };
 }
 
-/** Starts the verifier in a worker and returns the page's handle on it. */
-export function startVerifier(): Verifier {
+/**
+ * Starts the verifier in a worker, given the module the page is compiling
+ * (gowasm.ts), and returns the page's handle on it.
+ */
+export function startVerifier(module: Promise<WebAssembly.Module>): Verifier {
   const worker = new Worker(new URL("./goworker.js", import.meta.url), { type: "module" });
-  const pending = new Map<number, { resolve(reply: string): void; reject(e: Error): void }>();
+  const pending = new Map<number, { resolve(reply: unknown): void; reject(e: Error): void }>();
   let nextId = 0;
   let broken: Error | null = null;
   const fail = (e: Error) => {
@@ -196,16 +243,19 @@ export function startVerifier(): Verifier {
     for (const p of pending.values()) p.reject(e);
     pending.clear();
   };
-  worker.addEventListener("message", (ev: MessageEvent<{ id: number; reply?: string; error?: string }>) => {
+  worker.addEventListener("message", (ev: MessageEvent<{ id: number; reply?: unknown; error?: string }>) => {
     // The worker reports a failure to start with no id: nothing can be answered.
     if (ev.data.id < 0) return fail(new Error(ev.data.error ?? "the verifier failed to start"));
     const p = pending.get(ev.data.id);
     if (!p) return;
     pending.delete(ev.data.id);
-    if (ev.data.reply !== undefined) p.resolve(ev.data.reply);
-    else p.reject(new Error(ev.data.error ?? "the verifier failed"));
+    if (ev.data.error !== undefined) p.reject(new Error(ev.data.error));
+    else p.resolve(ev.data.reply);
   });
   worker.addEventListener("error", (ev) => fail(new Error(`the verifier could not be loaded: ${ev.message || "worker error"}`)));
+  module.then(
+    (m) => worker.postMessage({ module: m }),
+    (e: unknown) => fail(new Error(`the verifier could not be loaded: ${e instanceof Error ? e.message : String(e)}`)));
   return verifierOver((fn, ...args) => new Promise((resolve, reject) => {
     if (broken) return reject(broken);
     const id = nextId++;

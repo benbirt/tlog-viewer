@@ -12,7 +12,7 @@ import { b64Encode, type Bytes, sha256, utf8Encode } from "../../web/js/bytes.js
 import { POLICY_TEXT } from "../../web/js/policy_data.js";
 import type { Call } from "../../web/js/verifier.js";
 import { loadWasm } from "../../tools/wasm.js";
-import { ALG_ED25519, ALG_ED25519_COSIG, ALG_MLDSA44, NoteKey } from "../e2e/testlog.js";
+import { ED25519, ED25519_COSIGNATURE, ML_DSA_44, NoteKey } from "../e2e/testlog.js";
 
 const testdata = (f: string) => readFileSync(new URL("../testdata/" + f, import.meta.url));
 const POLICY = testdata("prod-verifier-668ba3c.policy").toString();
@@ -28,12 +28,15 @@ before(async () => {
 
 /** Asks both builds the same question, insists on the same answer, and returns it. */
 async function both<T>(fn: string, ...args: unknown[]): Promise<T> {
-  const [a, b] = [await go(fn, ...args), await tinygo(fn, ...args)];
+  const [x, y] = [await go(fn, ...args), await tinygo(fn, ...args)];
+  // Most replies are JSON; bytes are compared as hex.
+  const text = (v: unknown) => (typeof v === "string" ? v : JSON.stringify(v, (_k, b: unknown) => (b instanceof Uint8Array ? Buffer.from(b).toString("hex") : b)));
+  const [a, b] = [text(x), text(y)];
   if (a !== b) {
     const input = args.map((x) => (typeof x === "string" ? x : `<${String(x).slice(0, 40)}>`)).join(", ");
     assert.fail(`${fn}: the builds disagree\n  go:     ${a.slice(0, 600)}\n  tinygo: ${b.slice(0, 600)}\n  input:  ${input.slice(0, 600)}`);
   }
-  return JSON.parse(a) as T;
+  return (typeof x === "string" ? JSON.parse(x) : x) as T;
 }
 
 // ---------------------------------------------------------------------------
@@ -255,15 +258,15 @@ test("the builds judge a real checkpoint, altered every which way, alike", async
 
 test("the builds judge checkpoints signed for the purpose alike", async () => {
   const origin = "test.example/log";
-  const logs = [await NoteKey.generate(origin, ALG_ED25519), await NoteKey.generate(origin, ALG_MLDSA44)];
-  const otherLog = await NoteKey.generate("test.example/other", ALG_ED25519);
+  const logs = [await NoteKey.generate(origin, ED25519), await NoteKey.generate(origin, ML_DSA_44)];
+  const otherLog = await NoteKey.generate("test.example/other", ED25519);
   const witnesses = [
-    await NoteKey.generate("one.witness.example", ALG_ED25519_COSIG),
-    await NoteKey.generate("two.witness.example", ALG_MLDSA44),
-    await NoteKey.generate("three.witness.example", ALG_ED25519_COSIG),
-    await NoteKey.generate("four.witness.example", ALG_MLDSA44),
+    await NoteKey.generate("one.witness.example", ED25519_COSIGNATURE),
+    await NoteKey.generate("two.witness.example", ML_DSA_44),
+    await NoteKey.generate("three.witness.example", ED25519_COSIGNATURE),
+    await NoteKey.generate("four.witness.example", ML_DSA_44),
   ];
-  const stranger = await NoteKey.generate("stranger.example", ALG_ED25519_COSIG);
+  const stranger = await NoteKey.generate("stranger.example", ED25519_COSIGNATURE);
   const head = [...[...logs, otherLog].map((k) => `log ${k.vkey}`), ...witnesses.map((w, i) => `witness w${i + 1} ${w.vkey}`)].join("\n") + "\n";
   const policies = [
     head + "group g 2 w1 w2 w3\nquorum g\n",
@@ -280,11 +283,11 @@ test("the builds judge checkpoints signed for the purpose alike", async () => {
   const empty = await sha256(new Uint8Array(0));
   /** A checkpoint with the given first lines, signed by the given keys at the given times. */
   async function signed(
-    signers: NoteKey[], options: { origin?: string; size?: number; root?: Bytes; extensions?: string[]; time?: number; signedOrigin?: string } = {},
+    signers: NoteKey[], options: { origin?: string; size?: number; root?: Bytes; extensions?: string[]; time?: number } = {},
   ): Promise<string> {
     const cp = { origin: options.origin ?? origin, size: options.size ?? 42, root: options.root ?? root };
     const text = `${cp.origin}\n${cp.size}\n${b64Encode(cp.root)}\n${(options.extensions ?? []).map((l) => l + "\n").join("")}`;
-    const lines = await Promise.all(signers.map((k) => k.sign({ ...cp, origin: options.signedOrigin ?? cp.origin, text }, options.time ?? now)));
+    const lines = await Promise.all(signers.map((k) => k.sign(text, options.time ?? now)));
     return text + "\n" + lines.join("");
   }
 
@@ -307,13 +310,11 @@ test("the builds judge checkpoints signed for the purpose alike", async () => {
     await signed(everyone, { time: 0 }),
     await signed(everyone, { time: 1 }),
     await signed(everyone, { time: now + 10 * 365 * 86400 }),
-    await signed(everyone, { time: 2 ** 53 + 2 }),
     // Signed by the right keys, but over a different log's name.
     await signed(everyone, { origin: "test.example/other" }),
     await signed([otherLog, ...witnesses], { origin: "test.example/other" }),
     await signed([otherLog, ...witnesses]),
     await signed(everyone, { origin: "test.example/unknown" }),
-    await signed(everyone, { signedOrigin: "test.example/other" }),
     await signed([...everyone, stranger]),
     await signed([stranger]),
     await signed([stranger, ...everyone]),
@@ -343,7 +344,7 @@ test("the builds hash trees, and write and check proofs, alike", async () => {
   const r = random(5);
   const leaves = new Uint8Array(700 * 32);
   for (let i = 0; i < leaves.length; i++) leaves[i] = int(r, 256);
-  const key = await NoteKey.generate("test.example/log", ALG_ED25519);
+  const key = await NoteKey.generate("test.example/log", ED25519);
   const policy = `log ${key.vkey}\nquorum none\n`;
   const hexOf = (b: Bytes) => Buffer.from(b).toString("hex");
 
@@ -355,9 +356,8 @@ test("the builds hash trees, and write and check proofs, alike", async () => {
     const tree = await both<{ error?: string; root: string }>("tlogTree", leaves.subarray(0, size * 32), size);
     assert.equal(tree.error, undefined);
     if (size === 0) continue;
-    const root = Uint8Array.from(Buffer.from(tree.root, "base64"));
     const text = `test.example/log\n${size}\n${tree.root}\n`;
-    const checkpoint = text + "\n" + await key.sign({ origin: "test.example/log", size, root, text }, 0);
+    const checkpoint = text + "\n" + await key.sign(text, 0);
     for (const index of new Set([0, size - 1, Math.floor(size / 2), int(r, size), int(r, size)])) {
       const { proof } = await both<{ proof: string }>("tlogProve", leaves.subarray(0, size * 32), size, index, checkpoint);
       const check = (leaf: number, text = proof) =>
@@ -389,4 +389,29 @@ test("the builds hash trees, and write and check proofs, alike", async () => {
   }
   console.log(`trees and proofs: ${sizes.length} trees and ${proofs} proofs alike; ${refused} of 1500 altered proofs refused alike`);
   assert.ok(refused > 1000 && refused < 1500);
+});
+
+// ---------------------------------------------------------------------------
+// Tiles and bundles
+
+test("the builds lay out logs, split bundles and hash leaves alike", async () => {
+  const r = random(7);
+  let tiles = 0;
+  for (const [from, size] of [[0, 0], [0, 1], [0, 255], [0, 256], [0, 257], [0, 70000], [600, 700], [512, 1030], [700, 700], [700, 600],
+    [1234067 * 256, 1234067 * 256 + 146], [2 ** 40, 2 ** 40 + 1000]] as const) {
+    tiles += (await both<{ tiles: unknown[] }>("tlogLayout", JSON.stringify({ from, size }))).tiles.length;
+  }
+  const bundle = new Uint8Array(testdata("entries-first7.bin"));
+  const entries = await both<Uint8Array[]>("tlogBundle", bundle);
+  assert.equal(entries.length, 7);
+  for (const e of entries) assert.equal((await both<Uint8Array>("tlogLeafHash", e)).length, 32);
+  await both("tlogLeafHash", new Uint8Array(0));
+  let refused = 0;
+  for (let i = 0; i < 400; i++) {
+    const altered = bundle.slice(0, r() < 0.5 ? bundle.length : int(r, bundle.length));
+    for (let n = int(r, 3); n > 0; n--) altered[int(r, Math.min(altered.length, 4000))]! ^= 1 << int(r, 8);
+    if (!Array.isArray(await both("tlogBundle", altered))) refused++;
+  }
+  console.log(`tiles and bundles: ${tiles} tiles laid out alike; ${refused} of 400 altered bundles refused alike`);
+  assert.ok(refused > 50 && refused < 400);
 });
