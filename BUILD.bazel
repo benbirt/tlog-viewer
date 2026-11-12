@@ -1,3 +1,4 @@
+load("@aspect_rules_esbuild//esbuild:defs.bzl", "esbuild")
 load("@aspect_rules_js//js:defs.bzl", "js_binary", "js_run_binary", "js_test")
 load("@aspect_rules_ts//ts:defs.bzl", "ts_config", "ts_project")
 load("@bazel_lib//lib:copy_file.bzl", "copy_file")
@@ -26,6 +27,10 @@ ts_project(
     srcs = glob(["web/js/*.ts"]),
     declaration = True,
     tsconfig = ":tsconfig",
+    deps = [
+        ":node_modules/@noble/curves",
+        ":node_modules/jose",
+    ],
 )
 
 ts_project(
@@ -94,6 +99,42 @@ js_run_binary(
     tool = ":gen_build_info",
 )
 
+# The one module of the site that is bundled: web/js/deps.ts with the
+# third-party code it imports, as a single file the others import like any
+# other. Not minified, so that it can be read.
+esbuild(
+    name = "deps_bundle",
+    srcs = ["web/js/deps.ts"],
+    entry_point = "web/js/deps.ts",
+    format = "esm",
+    output = "web/bundled/deps.js",
+    platform = "browser",
+    sourcemap = "",
+    target = "es2022",
+    deps = [
+        ":node_modules/@noble/curves",
+        ":node_modules/jose",
+    ],
+)
+
+js_binary(
+    name = "gen_licenses",
+    data = NODE_RUNTIME + [
+        ":node_modules/@noble/curves",
+        ":node_modules/jose",
+    ],
+    entry_point = "tools/gen_licenses.js",
+)
+
+# The licences of the third-party code in the bundle, served beside it.
+js_run_binary(
+    name = "licenses",
+    srcs = [":deps_bundle"],
+    args = ["web/bundled/deps.js"],
+    stdout = "web/third-party-licenses.txt",
+    tool = ":gen_licenses",
+)
+
 # The static site, ready to serve from any web server.
 copy_to_directory(
     name = "site",
@@ -101,10 +142,17 @@ copy_to_directory(
         "web/index.html",
         "web/style.css",
         ":build_info",
+        ":deps_bundle",
+        ":licenses",
         ":policy_data",
         ":web",
     ],
-    exclude_srcs_patterns = ["**/*.d.ts"],
+    # tsc's own deps.js, with its bare imports, gives way to the bundle.
+    exclude_srcs_patterns = [
+        "**/*.d.ts",
+        "**/js/deps.js",
+    ],
+    replace_prefixes = {"bundled": "js"},
     root_paths = ["web"],
 )
 
@@ -122,6 +170,7 @@ js_binary(
         data = NODE_RUNTIME + glob(["tests/testdata/**"]) + [
             ":build_info",
             ":policy_data",
+            ":site",
         ],
         entry_point = t.removesuffix(".ts") + ".js",
     )

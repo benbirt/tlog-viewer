@@ -3,6 +3,7 @@ module(
     version = "0.0.0",
 )
 
+bazel_dep(name = "aspect_rules_esbuild", version = "0.27.1")
 bazel_dep(name = "aspect_rules_js", version = "3.6.0")
 bazel_dep(name = "aspect_rules_ts", version = "3.10.1")
 bazel_dep(name = "bazel_lib", version = "3.8.0")
@@ -33,6 +34,21 @@ npm.npm_translate_lock(
     name = "npm",
     pnpm_lock = "//:pnpm-lock.yaml",
 )
+
+# rules_js drops documentation from packages, licences included. Keep the
+# whole of the packages whose code the site ships, so that their licences can
+# be served with it (//:licenses).
+[
+    npm.npm_exclude_package_contents(
+        package = package,
+        presets = [],
+    )
+    for package in [
+        "@noble/curves",
+        "@noble/hashes",
+        "jose",
+    ]
+]
 use_repo(npm, "npm")
 
 typescript = use_extension("@aspect_rules_ts//ts:extensions.bzl", "typescript", dev_dependency = True)
