@@ -76,10 +76,12 @@ use_repo(
 )
 
 # TinyGo builds a second oracle from the same source. Its rules are not in a
-# registry, so they are pinned by commit, which update-pins.yaml advances.
+# registry, so they are pinned by commit, which update-pins.yaml advances. The
+# pin is to a fork's hermetic-embed branch, which builds go_library targets
+# with no network access; return to ptxmac/rules_tinygo once it has that.
 bazel_dep(name = "rules_tinygo", version = "0.0.0", dev_dependency = True)
 git_override(
     module_name = "rules_tinygo",
-    commit = "3318dfb49bc5a3a40678483cb408a6f5db3b0865",
-    remote = "https://github.com/ptxmac/rules_tinygo.git",
+    commit = "5be0db528125a42e1a46e9e62c724c9e799217ff",
+    remote = "https://github.com/benbirt/rules_tinygo.git",
 )

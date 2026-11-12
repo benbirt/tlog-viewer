@@ -128,10 +128,11 @@ one their name and key imply, relative URLs, and proofs in any form but the one
 the page writes. Any other disagreement fails the build.
 
 The oracle is built twice from the same source, by the Go compiler with
-rules_go and by TinyGo with [rules_tinygo](https://github.com/ptxmac/rules_tinygo),
-and the tests run against each. It is used only by tests; nothing of it is in
-the site. The TinyGo build has TinyGo fetch the third-party Go modules itself,
-so it needs the network; `go.sum` pins what it gets.
+rules_go and by TinyGo with [rules_tinygo](https://github.com/ptxmac/rules_tinygo) (for now a
+[fork](https://github.com/benbirt/rules_tinygo/tree/hermetic-embed) that builds hermetically),
+and the tests run against each. Both are built from the Go modules Bazel
+resolved, with no network access during the build. It is used only by tests;
+nothing of it is in the site.
 
 ## Checking the deployed site
 
