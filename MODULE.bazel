@@ -4,7 +4,7 @@ module(
 )
 
 bazel_dep(name = "aspect_rules_esbuild", version = "0.27.1")
-bazel_dep(name = "aspect_rules_js", version = "3.6.0")
+bazel_dep(name = "aspect_rules_js", version = "3.6.1")
 bazel_dep(name = "aspect_rules_ts", version = "3.10.1")
 bazel_dep(name = "bazel_lib", version = "3.8.0")
 bazel_dep(name = "gazelle", version = "0.54.0")
