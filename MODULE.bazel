@@ -82,6 +82,6 @@ use_repo(
 bazel_dep(name = "rules_tinygo", version = "0.0.0", dev_dependency = True)
 git_override(
     module_name = "rules_tinygo",
-    commit = "5be0db528125a42e1a46e9e62c724c9e799217ff",
+    commit = "efb5926c2deeceaece5fbd23fe69a05b2435514e",
     remote = "https://github.com/benbirt/rules_tinygo.git",
 )
