@@ -4,7 +4,7 @@ A static, single-page viewer for transparency logs that verifies what it shows.
 Today it covers the PAIC logs
 (`paic.google.com/log/N`, [tlog-tiles](https://c2sp.org/tlog-tiles)), whose
 entries are Project Oak endorsements. Everything it shows is verified in the
-browser; there is no backend.
+browser; there is no backend. It runs at https://tlog.benbirt.io/.
 
 For the selected log it:
 
@@ -156,7 +156,7 @@ statement ([build provenance](https://docs.github.com/en/actions/security-for-gi
 for every file it serves. To check that a file came from this repository's
 workflow, unmodified:
 
-    curl -sO https://benbirt.github.io/tlog-viewer/js/app.js
+    curl -sO https://tlog.benbirt.io/js/app.js
     gh attestation verify app.js --repo benbirt/tlog-viewer
 
 This ties the files GitHub Pages serves to a commit and a workflow run. It does
@@ -186,7 +186,8 @@ not be deployed.
 
 ### Repository settings this relies on
 
-- Pages: source "GitHub Actions".
+- Pages: source "GitHub Actions", custom domain `tlog.benbirt.io` (its DNS
+  record is in benbirt/benbirt.io), HTTPS enforced.
 - General: "Allow auto-merge" on.
 - A fine-grained personal access token for this repository with read and
   write access to Contents and Pull requests, saved as `AUTOMATION_TOKEN`
