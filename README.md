@@ -128,7 +128,7 @@ simulation is always announced at the top of the page.
 
 The site ships the verifier as built by TinyGo, with
 [rules_tinygo](https://github.com/ptxmac/rules_tinygo) (for now a
-[fork](https://github.com/benbirt/rules_tinygo/tree/hermetic-embed) that builds
+[fork](https://github.com/benbirt/rules_tinygo) that builds
 hermetically), because the result is a quarter of the size of the Go compiler's.
 TinyGo has its own runtime and its own versions of parts of the standard
 library, so the same source is also built by the Go compiler with rules_go, and
@@ -170,14 +170,17 @@ once CI passes:
 
 | What | Updated by | When |
 | --- | --- | --- |
-| google-tlog-witness commit (the trust policy) | `update-pins.yaml` | daily |
-| `.bazelversion` | `update-pins.yaml` | daily |
-| Bazel modules (`bazel_dep` versions) | `update-pins.yaml` | daily |
-| Node, within its major version | `update-pins.yaml` | daily |
-| rules_tinygo commit | `update-pins.yaml` | daily |
+| google-tlog-witness commit (the trust policy) | `bazel-updates.yaml` | daily |
+| `.bazelversion` | `bazel-updates.yaml` | daily |
+| Bazel modules (`bazel_dep` versions) | `bazel-updates.yaml` | daily |
+| Node, within its major version | `bazel-updates.yaml` | daily |
+| rules_tinygo commit | `bazel-updates.yaml` | daily |
 | npm packages, Go modules, GitHub Actions | Dependabot, merged by `dependabot-auto-merge.yaml` | weekly |
 
-`pages.yaml` deploys on every push to `main`, which includes those merges.
+`bazel-updates.yaml` calls the shared workflow in
+[benbirt/workflows](https://github.com/benbirt/workflows), which holds the
+logic. `pages.yaml` deploys on every push to `main`, which includes those
+merges.
 
 The update workflows act with a personal token, the `AUTOMATION_TOKEN` secret,
 because pushes and merges made with the built-in workflow token trigger no

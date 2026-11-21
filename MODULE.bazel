@@ -13,7 +13,7 @@ bazel_dep(name = "rules_nodejs", version = "6.7.7")
 
 # The tlog-policy (log keys, witness keys and quorum) baked into the viewer is
 # built from this repository. It is not in a registry, so it is pinned by
-# commit; .github/workflows/update-pins.yaml advances the pin.
+# commit; .github/workflows/bazel-updates.yaml advances the pin.
 bazel_dep(name = "google-tlog-witness", version = "0.0.1", repo_name = "google_tlog_witness")
 git_override(
     module_name = "google-tlog-witness",
@@ -76,9 +76,10 @@ use_repo(
 )
 
 # TinyGo builds the module the site ships. Its rules are not in a
-# registry, so they are pinned by commit, which update-pins.yaml advances. The
-# pin is to a fork's hermetic-embed branch, which builds go_library targets
-# with no network access; return to ptxmac/rules_tinygo once it has that.
+# registry, so they are pinned by commit, which bazel-updates.yaml advances.
+# The pin follows main of a fork (benbirt/rules_tinygo), which builds
+# go_library targets with no network access; return to ptxmac/rules_tinygo once
+# it has that.
 bazel_dep(name = "rules_tinygo", version = "0.0.0", dev_dependency = True)
 git_override(
     module_name = "rules_tinygo",
