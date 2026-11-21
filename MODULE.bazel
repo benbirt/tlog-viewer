@@ -17,7 +17,7 @@ bazel_dep(name = "rules_nodejs", version = "6.7.7")
 bazel_dep(name = "google-tlog-witness", version = "0.0.1", repo_name = "google_tlog_witness")
 git_override(
     module_name = "google-tlog-witness",
-    commit = "47879b6c69af0523f7e160c8550cfc1ae1fddfa4",
+    commit = "1703b90083b4084d70403d7601cd8b2e7a78c29b",
     remote = "https://github.com/google/google-tlog-witness.git",
 )
 
