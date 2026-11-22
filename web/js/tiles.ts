@@ -5,7 +5,10 @@
 import type { Bytes } from "./bytes.js";
 
 export class HttpError extends Error {
-  constructor(readonly url: string, readonly status: number) {
+  constructor(
+    readonly url: string,
+    readonly status: number,
+  ) {
     super(`${url}: HTTP ${status}`);
   }
 }
@@ -13,9 +16,7 @@ export class HttpError extends Error {
 export type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
 
 /** A file fetched from a log, other than its checkpoint. */
-export type LogFile =
-  | { kind: "hashes"; level: number; index: number }
-  | { kind: "entries"; index: number };
+export type LogFile = { kind: "hashes"; level: number; index: number } | { kind: "entries"; index: number };
 
 /**
  * Changes to make to what a log serves before it is used, for simulating
@@ -35,7 +36,9 @@ export class LogClient {
    * @param tamper Alters what was fetched, to simulate a failure.
    */
   constructor(
-    readonly base: string, fetchFn: Fetch = (url, init) => fetch(url, init), readonly signal?: AbortSignal,
+    readonly base: string,
+    fetchFn: Fetch = (url, init) => fetch(url, init),
+    readonly signal?: AbortSignal,
     private readonly tamper?: Tamper,
   ) {
     this.#fetch = fetchFn;
@@ -66,7 +69,17 @@ export class LogClient {
   }
 
   /** Fetches a hash tile, which must hold `width` hashes. Level 0 holds leaf hashes. */
-  async hashTile({ path, width, index, level = 0 }: { path: string; width: number; index: number; level?: number }): Promise<Bytes> {
+  async hashTile({
+    path,
+    width,
+    index,
+    level = 0,
+  }: {
+    path: string;
+    width: number;
+    index: number;
+    level?: number;
+  }): Promise<Bytes> {
     const bytes = await this.#file(path, { kind: "hashes", level, index });
     if (bytes.length !== width * 32) throw new Error(`hash tile ${path} has the wrong size`);
     return bytes;

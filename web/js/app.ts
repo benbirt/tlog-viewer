@@ -14,7 +14,13 @@ import { POLICY_SOURCE, POLICY_TEXT } from "./policy_data.js";
 import { WorkerPool } from "./pool.js";
 import { compileVerifier } from "./gowasm.js";
 import { HttpError, LogClient } from "./tiles.js";
-import { type CheckpointResult, type QuorumNode, type SignatureResult, startVerifier, type TileRef } from "./verifier.js";
+import {
+  type CheckpointResult,
+  type QuorumNode,
+  type SignatureResult,
+  startVerifier,
+  type TileRef,
+} from "./verifier.js";
 
 const DEFAULT_PAGE_SIZE = 50;
 /** A checkpoint last witnessed longer ago than this draws a warning. */
@@ -92,7 +98,9 @@ function $<T extends HTMLElement = HTMLElement>(id: string): T {
 type Child = Node | string | null | undefined;
 
 function h<K extends keyof HTMLElementTagNameMap>(
-  tag: K, attrs?: Record<string, string> | null, ...children: Child[]
+  tag: K,
+  attrs?: Record<string, string> | null,
+  ...children: Child[]
 ): HTMLElementTagNameMap[K] {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs ?? {})) el.setAttribute(k, v);
@@ -106,7 +114,11 @@ const badge = (text: string, kind = "") => h("span", { class: `badge ${kind}` },
 const iconBadge = (symbol: string, kind: string, label: string) =>
   h("span", { class: `badge ${kind}`, role: "img", "aria-label": label }, symbol);
 const checkBadge = (ok: boolean | null) =>
-  ok === true ? iconBadge("✓", "ok", "Passed") : ok === false ? iconBadge("✕", "bad", "Failed") : iconBadge("?", "warn", "Not checked");
+  ok === true
+    ? iconBadge("✓", "ok", "Passed")
+    : ok === false
+      ? iconBadge("✕", "bad", "Failed")
+      : iconBadge("?", "warn", "Not checked");
 const mono = (text: string) => h("span", { class: "mono" }, text);
 const link = (url: string, text = url) => h("a", { href: url, ...EXTERNAL }, text);
 /** A link only when the text is an https URL; plain text otherwise. */
@@ -114,9 +126,11 @@ const maybeLink = (text: string): Child => (/^https:\/\/[^\s]+$/.test(text) ? li
 const count = (n: number) => n.toLocaleString("en");
 
 function kv(pairs: [string, Child][]): HTMLElement {
-  return h("dl", { class: "kv" }, ...pairs
-    .filter(([, v]) => v != null && v !== "")
-    .flatMap(([k, v]) => [h("dt", null, k), h("dd", null, v)]));
+  return h(
+    "dl",
+    { class: "kv" },
+    ...pairs.filter(([, v]) => v != null && v !== "").flatMap(([k, v]) => [h("dt", null, k), h("dd", null, v)]),
+  );
 }
 
 const fmtTime = (iso: string | null) => (iso ? iso.replace("T", " ").replace(/(:\d\d)(\.\d+)?Z$/, "$1") : "—");
@@ -136,7 +150,11 @@ function fmtAge(s: bigint, at: number): string {
   const seconds = Math.round(at / 1000 - Number(s));
   if (seconds < -120) return "in the future";
   if (seconds < 90) return "just now";
-  const units: [number, string][] = [[86400, "day"], [3600, "hour"], [60, "minute"]];
+  const units: [number, string][] = [
+    [86400, "day"],
+    [3600, "hour"],
+    [60, "minute"],
+  ];
   for (const [size, name] of units) {
     const n = Math.floor(seconds / size);
     if (n >= 1) return `${count(n)} ${name}${n === 1 ? "" : "s"} ago`;
@@ -186,7 +204,7 @@ function readRoute(): Route {
   const validity = p.get("validity") ?? "";
   const pageSize = number("per");
   return {
-    origin: log !== null && origins.includes(log) ? log : origins[0] ?? "",
+    origin: log !== null && origins.includes(log) ? log : (origins[0] ?? ""),
     entry: number("entry"),
     q: p.get("q") ?? "",
     validity: VALIDITIES.includes(validity) ? (validity as Validity) : "",
@@ -218,8 +236,17 @@ function href(r: Route): string {
 
 /** A log's default view, keeping any simulated failure in effect. */
 const logRoute = (origin: string): Route => ({
-  origin, entry: null, q: "", validity: "", publisher: "", problems: false,
-  page: 0, pageSize: ui.pageSize, checkpoint: false, keys: false, fault: ui.fault,
+  origin,
+  entry: null,
+  q: "",
+  validity: "",
+  publisher: "",
+  problems: false,
+  page: 0,
+  pageSize: ui.pageSize,
+  checkpoint: false,
+  keys: false,
+  fault: ui.fault,
 });
 
 /** The route on screen. Changes to it go through navigate(). */
@@ -267,9 +294,11 @@ function notice(text: string | null, bad = false): void {
 
 async function pool<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
   let next = 0;
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (next < items.length) await fn(items[next++]!);
-  }));
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (next < items.length) await fn(items[next++]!);
+    }),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -384,7 +413,10 @@ async function load(origin: string, attempt = 0): Promise<void> {
     if (!bytesEqual(root, cp.hash)) {
       setStep("step-root", "fail", `Recomputed ${b64Encode(root)}; checkpoint says ${b64Encode(cp.hash)}.`);
       skipSteps(3);
-      notice(`The leaf-hash tiles do not hash to the ${checkpointWord} checkpoint, so the log's entries are not shown.`, true);
+      notice(
+        `The leaf-hash tiles do not hash to the ${checkpointWord} checkpoint, so the log's entries are not shown.`,
+        true,
+      );
       return;
     }
     setStep("step-root", "busy", `${rootText(cp.size)} Checking interior tiles…`);
@@ -457,14 +489,26 @@ function showCheckpointSteps(s: LogState, result: CheckpointResult): boolean {
   // checkpoint, but it is never shown as a clean pass either.
   const logSigs = result.signatures.filter((x) => x.role === "log");
   const logAlgs = (status: SignatureResult["status"]) =>
-    logSigs.filter((x) => x.status === status).map((x) => x.algName).join(" + ");
+    logSigs
+      .filter((x) => x.status === status)
+      .map((x) => x.algName)
+      .join(" + ");
   if (result.logSigned) {
-    setStep("step-log", logAlgs("invalid") ? "warn" : "ok", `Signed by the log (${logAlgs("valid")})` +
-      (logAlgs("invalid") ? `; its ${logAlgs("invalid")} signature is invalid` : "") + ".");
+    setStep(
+      "step-log",
+      logAlgs("invalid") ? "warn" : "ok",
+      `Signed by the log (${logAlgs("valid")})` +
+        (logAlgs("invalid") ? `; its ${logAlgs("invalid")} signature is invalid` : "") +
+        ".",
+    );
   } else {
-    setStep("step-log", "fail", logSigs.length > 0
-      ? `No valid log signature: ${logAlgs("invalid")} invalid.`
-      : "Not signed by any log key in the trust policy.");
+    setStep(
+      "step-log",
+      "fail",
+      logSigs.length > 0
+        ? `No valid log signature: ${logAlgs("invalid")} invalid.`
+        : "Not signed by any log key in the trust policy.",
+    );
   }
 
   const q = result.quorum;
@@ -475,17 +519,29 @@ function showCheckpointSteps(s: LogState, result: CheckpointResult): boolean {
   // log's latest: someone serving an old one would look like this.
   const witnessed = result.witnessedAt;
   // A time no clock could have produced is not old, only wrong; fmtAge says so.
-  const stale = witnessed !== null && witnessed > 0n && witnessed <= MAX_UNIX_SECONDS &&
+  const stale =
+    witnessed !== null &&
+    witnessed > 0n &&
+    witnessed <= MAX_UNIX_SECONDS &&
     now() / 1000 - Number(witnessed) > STALE_AFTER_SECONDS;
-  const rule = q.kind === "group" ? `${q.count} of ${q.children?.length ?? 0} in “${q.name}”, ${q.threshold} required` : q.name;
-  setStep("step-quorum", !q.satisfied ? "fail" : invalid > 0 || stale ? "warn" : "ok",
+  const rule =
+    q.kind === "group" ? `${q.count} of ${q.children?.length ?? 0} in “${q.name}”, ${q.threshold} required` : q.name;
+  setStep(
+    "step-quorum",
+    !q.satisfied ? "fail" : invalid > 0 || stale ? "warn" : "ok",
     `${cosigners.length} valid cosignature${cosigners.length === 1 ? "" : "s"}; ${rule}.` +
-    (witnessed !== null ? ` Witnessed ${fmtAge(witnessed, now())}${stale ? ". More than 24 hours old; this may not be the log's latest checkpoint" : ""}.` : "") +
-    (invalid > 0 ? ` ${invalid} cosignature${invalid === 1 ? " is" : "s are"} invalid.` : ""));
+      (witnessed !== null
+        ? ` Witnessed ${fmtAge(witnessed, now())}${stale ? ". More than 24 hours old; this may not be the log's latest checkpoint" : ""}.`
+        : "") +
+      (invalid > 0 ? ` ${invalid} cosignature${invalid === 1 ? " is" : "s are"} invalid.` : ""),
+  );
 
   if (!result.ok) {
     skipSteps(2);
-    notice(`The checkpoint does not satisfy the trust policy (${result.problems.join("; ")}), so the log's entries are not shown.`, true);
+    notice(
+      `The checkpoint does not satisfy the trust policy (${result.problems.join("; ")}), so the log's entries are not shown.`,
+      true,
+    );
     return false;
   }
   return true;
@@ -496,12 +552,24 @@ const rootText = (size: number) => `Recomputed from ${count(size)} leaf hashes; 
 /** Shows the Merkle root step once the leaves match the checkpoint. */
 function showRootStep(size: number, interior: { checked: number; mismatched: string[] }): void {
   if (interior.mismatched.length > 0) {
-    setStep("step-root", "fail", `The leaf hashes match the checkpoint, but interior tile data disagrees: ${interior.mismatched.join(", ")}.`);
-    notice(`The log serves interior tiles that disagree with its leaf hashes. The entries below are still checked against the ${checkpointWord} checkpoint.`, true);
+    setStep(
+      "step-root",
+      "fail",
+      `The leaf hashes match the checkpoint, but interior tile data disagrees: ${interior.mismatched.join(", ")}.`,
+    );
+    notice(
+      `The log serves interior tiles that disagree with its leaf hashes. The entries below are still checked against the ${checkpointWord} checkpoint.`,
+      true,
+    );
   } else {
-    setStep("step-root", "ok", rootText(size) + (interior.checked === 0
-      ? " The log is too small to have interior tiles."
-      : ` The log's ${count(interior.checked)} interior tile${interior.checked === 1 ? " matches" : "s match"} too.`));
+    setStep(
+      "step-root",
+      "ok",
+      rootText(size) +
+        (interior.checked === 0
+          ? " The log is too small to have interior tiles."
+          : ` The log's ${count(interior.checked)} interior tile${interior.checked === 1 ? " matches" : "s match"} too.`),
+    );
   }
 }
 
@@ -514,7 +582,11 @@ async function ingestBundle(s: LogState, t: TileRef, from: number): Promise<void
   if (!live() || !s.leafHashes) return;
   // The fetching, hashing and signature checking happen in a worker.
   const entries = await s.workers.bundle({
-    base: s.client.base, fault: s.fault, tile: t, from, size: s.size,
+    base: s.client.base,
+    fault: s.fault,
+    tile: t,
+    from,
+    size: s.size,
     tileLeafHashes: s.leafHashes.slice(t.first * 32, (t.first + t.width) * 32),
   });
   // Once loading has failed, bundles still in flight must not revive it.
@@ -568,7 +640,10 @@ function markChecked(ok: boolean, note?: string): void {
 function reportInconsistency(s: LogState, what: string): void {
   s.inconsistent = true;
   setStep("step-root", "fail", what);
-  notice(`${what} A log must only add entries, never alter or remove them. The entries below are those verified against the earlier checkpoint; the page has stopped following this log.`, true);
+  notice(
+    `${what} A log must only add entries, never alter or remove them. The entries below are those verified against the earlier checkpoint; the page has stopped following this log.`,
+    true,
+  );
   $("checked").textContent = "Stopped following";
 }
 
@@ -609,12 +684,18 @@ async function refresh(): Promise<void> {
       const { root: earlier } = await verifier.tree(s.leafHashes, cp.size);
       if (!live()) return;
       if (!bytesEqual(earlier, cp.hash)) {
-        return reportInconsistency(s, `The log now serves a tree of ${count(cp.size)} entries that differs from the first ${count(cp.size)} of the ${count(old.size)} verified earlier.`);
+        return reportInconsistency(
+          s,
+          `The log now serves a tree of ${count(cp.size)} entries that differs from the first ${count(cp.size)} of the ${count(old.size)} verified earlier.`,
+        );
       }
       return markChecked(true, `server returned an older checkpoint (size ${count(cp.size)})`);
     }
     if (cp.size === old.size && !sameTree) {
-      return reportInconsistency(s, `The log now serves a different Merkle root for size ${count(cp.size)}: ${b64Encode(cp.hash)} instead of ${b64Encode(old.hash)}.`);
+      return reportInconsistency(
+        s,
+        `The log now serves a different Merkle root for size ${count(cp.size)}: ${b64Encode(cp.hash)} instead of ${b64Encode(old.hash)}.`,
+      );
     }
     if (sameTree) {
       // The same tree, witnessed again.
@@ -630,12 +711,18 @@ async function refresh(): Promise<void> {
     const growth = await extendLeafHashes(s.client, changed, s.leafHashes, old.size, cp.size);
     if (!live()) return;
     if (growth.kind === "rewritten") {
-      return reportInconsistency(s, `The log now serves a different leaf hash for entry ${count(growth.index)}, which it had already published.`);
+      return reportInconsistency(
+        s,
+        `The log now serves a different leaf hash for entry ${count(growth.index)}, which it had already published.`,
+      );
     }
     const { root, interior: expected } = await verifier.tree(growth.leafHashes, cp.size);
     if (!live()) return;
     if (!bytesEqual(root, cp.hash)) {
-      return reportInconsistency(s, `The new tree of size ${count(cp.size)} does not extend the earlier ${count(old.size)}-entry tree: keeping earlier leaf hashes gives Merkle root ${b64Encode(root)}, but the new checkpoint says ${b64Encode(cp.hash)}.`);
+      return reportInconsistency(
+        s,
+        `The new tree of size ${count(cp.size)} does not extend the earlier ${count(old.size)}-entry tree: keeping earlier leaf hashes gives Merkle root ${b64Encode(root)}, but the new checkpoint says ${b64Encode(cp.hash)}.`,
+      );
     }
     const interior = await verifyInteriorTiles(s.client, expected);
     const { tiles: all } = await verifier.layout(0, cp.size);
@@ -696,31 +783,39 @@ function updateEntriesStep(s: LogState): void {
 // Checkpoint panel
 
 const SIGNATURE_BADGE: Record<SignatureResult["status"], [string, string]> = {
-  "valid": ["valid", "ok"],
-  "invalid": ["invalid", "bad"],
+  valid: ["valid", "ok"],
+  invalid: ["invalid", "bad"],
   "unknown-key": ["not in policy", ""],
 };
 
 function quorumTree(n: QuorumNode): HTMLElement {
   const children = n.children ?? [];
   const label = n.kind === "group" ? `${n.name} — ${n.count} of ${children.length}, ${n.threshold} required` : n.name;
-  return h("li", null,
-    h("span", { class: n.satisfied ? "sat" : "unsat" }, n.satisfied ? "✓ " : "○ "), label,
-    n.kind === "group" ? h("ul", null, ...children.map(quorumTree)) : null);
+  return h(
+    "li",
+    null,
+    h("span", { class: n.satisfied ? "sat" : "unsat" }, n.satisfied ? "✓ " : "○ "),
+    label,
+    n.kind === "group" ? h("ul", null, ...children.map(quorumTree)) : null,
+  );
 }
 
 function renderCheckpoint(s: LogState, result: CheckpointResult): void {
   const cp = result.checkpoint;
   $("cp-summary").textContent = `size ${cp.size} · ${b64Encode(cp.hash)}`;
 
-  const rows = result.signatures.map((sig) => h("tr", null,
-    h("td", null, sig.role === "log" ? "Log" : sig.role === "witness" ? `Witness ${sig.witness}` : "Unknown"),
-    h("td", null, mono(sig.name)),
-    h("td", null, mono(sig.keyId.toString(16).padStart(8, "0"))),
-    h("td", null, sig.algName ?? "—"),
-    h("td", null, sig.timestamp !== null ? fmtUnix(sig.timestamp) : "—"),
-    h("td", null, badge(...SIGNATURE_BADGE[sig.status])),
-  ));
+  const rows = result.signatures.map((sig) =>
+    h(
+      "tr",
+      null,
+      h("td", null, sig.role === "log" ? "Log" : sig.role === "witness" ? `Witness ${sig.witness}` : "Unknown"),
+      h("td", null, mono(sig.name)),
+      h("td", null, mono(sig.keyId.toString(16).padStart(8, "0"))),
+      h("td", null, sig.algName ?? "—"),
+      h("td", null, sig.timestamp !== null ? fmtUnix(sig.timestamp) : "—"),
+      h("td", null, badge(...SIGNATURE_BADGE[sig.status])),
+    ),
+  );
 
   $("cp-body").replaceChildren(
     kv([
@@ -729,21 +824,52 @@ function renderCheckpoint(s: LogState, result: CheckpointResult): void {
       ["Merkle root", mono(b64Encode(cp.hash))],
       ["Source", link(s.client.url("checkpoint"))],
     ]),
-    h("section", null, h("h3", null, "Signatures"),
-      h("div", { class: "scroll-x" }, h("table", { class: "sigs" },
-        h("thead", null, h("tr", null,
-          ...["Signer", "Key name", "Key ID", "Algorithm", "Cosigned at", "Status"].map((t) => h("th", null, t)))),
-        h("tbody", null, ...rows)))),
-    h("section", null, h("h3", null, "Quorum rule"),
+    h(
+      "section",
+      null,
+      h("h3", null, "Signatures"),
+      h(
+        "div",
+        { class: "scroll-x" },
+        h(
+          "table",
+          { class: "sigs" },
+          h(
+            "thead",
+            null,
+            h(
+              "tr",
+              null,
+              ...["Signer", "Key name", "Key ID", "Algorithm", "Cosigned at", "Status"].map((t) => h("th", null, t)),
+            ),
+          ),
+          h("tbody", null, ...rows),
+        ),
+      ),
+    ),
+    h(
+      "section",
+      null,
+      h("h3", null, "Quorum rule"),
       result.quorum.kind === "none"
         ? h("p", null, "The trust policy requires no cosignatures.")
-        : h("ul", { class: "tree" }, quorumTree(result.quorum))),
-    h("section", null, h("h3", null, "Checkpoint body"),
+        : h("ul", { class: "tree" }, quorumTree(result.quorum)),
+    ),
+    h(
+      "section",
+      null,
+      h("h3", null, "Checkpoint body"),
       // Exactly the text the signatures were checked over.
       h("pre", null, result.text),
-      result.extensionsAuthenticated ? null : h("p", { class: "caveat" },
-        "The lines after the Merkle root are not covered by any valid log signature, " +
-        "so whoever relayed the checkpoint could have changed them.")),
+      result.extensionsAuthenticated
+        ? null
+        : h(
+            "p",
+            { class: "caveat" },
+            "The lines after the Merkle root are not covered by any valid log signature, " +
+              "so whoever relayed the checkpoint could have changed them.",
+          ),
+    ),
   );
 }
 
@@ -767,14 +893,20 @@ function validity(summary: Summary | null, at = now()): Validity {
 }
 
 const VALIDITY_BADGE: Record<Validity, [string, string]> = {
-  current: ["current", "plain"], expired: ["expired", ""], future: ["not yet", "warn"], unknown: ["unknown", "warn"],
+  current: ["current", "plain"],
+  expired: ["expired", ""],
+  future: ["not yet", "warn"],
+  unknown: ["unknown", "warn"],
 };
 
 let filterQueued = false;
 function scheduleFilter(): void {
   if (filterQueued) return;
   filterQueued = true;
-  setTimeout(() => { filterQueued = false; applyFilter(); }, 150);
+  setTimeout(() => {
+    filterQueued = false;
+    applyFilter();
+  }, 150);
 }
 
 function applyFilter(): void {
@@ -815,7 +947,10 @@ function rowFor(s: LogState, index: number): HTMLElement {
   const cell = (cls: string, ...c: Child[]) => h("span", { class: cls, role: "cell" }, ...c);
   // The link sits in the first cell and is stretched over the row in CSS, so
   // the whole row is clickable while remaining a link to assistive technology.
-  const open = cell("num", h("a", { href: href({ ...ui, entry: index }), "aria-label": `Entry ${index}` }, String(index)));
+  const open = cell(
+    "num",
+    h("a", { href: href({ ...ui, entry: index }), "aria-label": `Entry ${index}` }, String(index)),
+  );
   if (!e) {
     row.classList.add("pending");
     if (s.failed) row.classList.add("unloaded");
@@ -858,7 +993,9 @@ function renderRows(): void {
   $<HTMLButtonElement>("page-next").disabled = $<HTMLButtonElement>("page-last").disabled = page === pages - 1;
 
   if (indices.length === 0) {
-    rows.replaceChildren(h("div", { class: "empty" }, s.size === 0 ? "This log has no entries yet." : "No entries match."));
+    rows.replaceChildren(
+      h("div", { class: "empty" }, s.size === 0 ? "This log has no entries yet." : "No entries match."),
+    );
     return;
   }
   // Entries are still arriving while the log loads; keep keyboard focus on a
@@ -906,7 +1043,19 @@ function renderKeys(): void {
   for (const e of s.entries) {
     if (!e?.keyFingerprint) continue;
     let k = keys.get(e.keyFingerprint);
-    if (!k) keys.set(e.keyFingerprint, k = { fingerprint: e.keyFingerprint, entries: 0, failed: 0, first: e, latest: e, publishers: new Set(), workloads: new Set() });
+    if (!k)
+      keys.set(
+        e.keyFingerprint,
+        (k = {
+          fingerprint: e.keyFingerprint,
+          entries: 0,
+          failed: 0,
+          first: e,
+          latest: e,
+          publishers: new Set(),
+          workloads: new Set(),
+        }),
+      );
     k.entries++;
     if (!e.ok) k.failed++;
     if (e.index < k.first.index) k.first = e;
@@ -921,32 +1070,70 @@ function renderKeys(): void {
   const all = [...keys.values()].sort((a, b) => b.latest.index - a.latest.index);
   const fresh = all.filter(isNew).length;
   $("keys").hidden = false;
-  $("keys-summary").textContent = `${count(all.length)} in use` +
+  $("keys-summary").textContent =
+    `${count(all.length)} in use` +
     (fresh > 0 ? ` · ${count(fresh)} first used in the last ${NEW_KEY_DAYS} days` : "") +
     (s.done ? "" : " · still loading");
   if (!ui.keys) return;
 
-  const when = (e: Entry) => h("span", null,
-    h("a", { href: href({ ...ui, entry: e.index }) }, `#${e.index}`), ` ${fmtTime(e.summary?.issuedOn ?? null)}`);
-  const rows = all.map((k) => h("tr", null,
-    h("td", null,
-      h("a", { href: href({ ...ui, q: k.fingerprint, page: 0, entry: null }), class: "mono", title: k.fingerprint }, k.fingerprint.slice(0, 16) + "…"),
-      isNew(k) ? " " : null, isNew(k) ? badge("new", "warn") : null),
-    h("td", null, count(k.entries)),
-    h("td", null, k.failed > 0 ? badge(count(k.failed), "bad") : "0"),
-    h("td", null, when(k.first)),
-    h("td", null, when(k.latest)),
-    h("td", null, [...k.publishers].sort().join(", ") || "—"),
-    h("td", null, count(k.workloads.size)),
-  ));
+  const when = (e: Entry) =>
+    h(
+      "span",
+      null,
+      h("a", { href: href({ ...ui, entry: e.index }) }, `#${e.index}`),
+      ` ${fmtTime(e.summary?.issuedOn ?? null)}`,
+    );
+  const rows = all.map((k) =>
+    h(
+      "tr",
+      null,
+      h(
+        "td",
+        null,
+        h(
+          "a",
+          { href: href({ ...ui, q: k.fingerprint, page: 0, entry: null }), class: "mono", title: k.fingerprint },
+          k.fingerprint.slice(0, 16) + "…",
+        ),
+        isNew(k) ? " " : null,
+        isNew(k) ? badge("new", "warn") : null,
+      ),
+      h("td", null, count(k.entries)),
+      h("td", null, k.failed > 0 ? badge(count(k.failed), "bad") : "0"),
+      h("td", null, when(k.first)),
+      h("td", null, when(k.latest)),
+      h("td", null, [...k.publishers].sort().join(", ") || "—"),
+      h("td", null, count(k.workloads.size)),
+    ),
+  );
   $("keys-body").replaceChildren(
-    h("p", { class: "muted" },
+    h(
+      "p",
+      { class: "muted" },
       "The keys that signed this log's entries, by SHA-256 of the public key. This page has no list of endorser keys, " +
-      "so it does not check whether any of them is trusted. Dates are those the endorsements state."),
-    h("div", { class: "scroll-x" }, h("table", { class: "sigs" },
-      h("thead", null, h("tr", null,
-        ...["Key", "Entries", "Failed or unchecked", "First entry", "Latest entry", "Publishers", "Workloads"].map((t) => h("th", null, t)))),
-      h("tbody", null, ...rows))));
+        "so it does not check whether any of them is trusted. Dates are those the endorsements state.",
+    ),
+    h(
+      "div",
+      { class: "scroll-x" },
+      h(
+        "table",
+        { class: "sigs" },
+        h(
+          "thead",
+          null,
+          h(
+            "tr",
+            null,
+            ...["Key", "Entries", "Failed or unchecked", "First entry", "Latest entry", "Publishers", "Workloads"].map(
+              (t) => h("th", null, t),
+            ),
+          ),
+        ),
+        h("tbody", null, ...rows),
+      ),
+    ),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -969,7 +1156,9 @@ function openDetailFromRoute(): void {
 /** A place for a claim's title, filled in if and when its document has been read. */
 function claimHeading(type: string): HTMLElement {
   const el = h("div", { class: "claim-title" });
-  void claimTitle(type).then((title) => { if (title) el.textContent = title; });
+  void claimTitle(type).then((title) => {
+    if (title) el.textContent = title;
+  });
   return el;
 }
 
@@ -986,78 +1175,135 @@ function proofControl(s: LogState, e: Entry): Child {
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 10_000);
   });
-  return h("span", null, button,
-    h("span", { class: "muted proof-note" }, " The index, inclusion proof and signed checkpoint, for checking this entry offline."));
+  return h(
+    "span",
+    null,
+    button,
+    h(
+      "span",
+      { class: "muted proof-note" },
+      " The index, inclusion proof and signed checkpoint, for checking this entry offline.",
+    ),
+  );
 }
 
 function detailSections(s: LogState, e: Entry): HTMLElement[] {
   const sm = e.summary;
   const check = (ok: boolean | null, text: string) => h("li", null, checkBadge(ok), h("span", null, text));
   // Each check has three outcomes; say which, never implying a pass.
-  const contentHashText = e.checks.contentHash === true
-    ? "The recorded SHA-256 matches the statement."
-    : e.checks.contentHash === false
-      ? "The recorded SHA-256 does not match the statement."
-      : "No SHA-256 of the statement could be checked: the entry records none, or could not be decoded.";
-  const signatureText = e.checks.signature === true
-    ? "The ECDSA P-256 signature over the statement verifies under the key below. This page has no list of endorser keys, so it does not check whether that key is trusted."
-    : e.checks.signature === false
-      ? e.keyError
-        ? `The signing key could not be read (${e.keyError}), so the signature cannot verify.`
-        : "The signature over the statement does not verify under the key below."
-      : e.keyPem
-        ? "The signature could not be checked: the key is not ECDSA P-256."
-        : "The signature was not checked: the entry could not be decoded.";
+  const contentHashText =
+    e.checks.contentHash === true
+      ? "The recorded SHA-256 matches the statement."
+      : e.checks.contentHash === false
+        ? "The recorded SHA-256 does not match the statement."
+        : "No SHA-256 of the statement could be checked: the entry records none, or could not be decoded.";
+  const signatureText =
+    e.checks.signature === true
+      ? "The ECDSA P-256 signature over the statement verifies under the key below. This page has no list of endorser keys, so it does not check whether that key is trusted."
+      : e.checks.signature === false
+        ? e.keyError
+          ? `The signing key could not be read (${e.keyError}), so the signature cannot verify.`
+          : "The signature over the statement does not verify under the key below."
+        : e.keyPem
+          ? "The signature could not be checked: the key is not ECDSA P-256."
+          : "The signature was not checked: the entry could not be decoded.";
   const bundle = s.tiles.find((t) => e.index >= t.first && e.index < t.first + t.width);
   const bundleUrl = bundle ? s.client.url(bundle.entries) : null;
 
   const sections = [
-    h("section", null, h("h3", null, "Verification"), h("ul", { class: "checks" },
-      check(e.inLog, e.inLog
-        ? `This entry matches leaf ${e.index} of the tree whose Merkle root the log signed${policy.quorum === "none" ? "" : " and the witnesses cosigned"}.`
-        : "This entry does not match the leaf hash the log committed to."),
-      check(e.checks.contentHash, contentHashText),
-      check(e.checks.signature, signatureText),
-      e.error ? check(false, `Could not be decoded: ${e.error}`) : null,
-    )),
+    h(
+      "section",
+      null,
+      h("h3", null, "Verification"),
+      h(
+        "ul",
+        { class: "checks" },
+        check(
+          e.inLog,
+          e.inLog
+            ? `This entry matches leaf ${e.index} of the tree whose Merkle root the log signed${policy.quorum === "none" ? "" : " and the witnesses cosigned"}.`
+            : "This entry does not match the leaf hash the log committed to.",
+        ),
+        check(e.checks.contentHash, contentHashText),
+        check(e.checks.signature, signatureText),
+        e.error ? check(false, `Could not be decoded: ${e.error}`) : null,
+      ),
+    ),
   ];
 
   if (sm) {
     sections.push(
-      h("section", null, h("h3", null, "Endorsement"), kv([
-        ["Subject", sm.subjectName],
-        ["SHA-256", sm.subjectDigest && mono(sm.subjectDigest)],
-        ["Subjects", sm.subjectCount !== 1 ? `${sm.subjectCount} (first shown)` : null],
-        ["Issued", fmtTime(sm.issuedOn)],
-        ["Valid from", fmtTime(sm.notBefore)],
-        ["Valid until", h("span", null, fmtTime(sm.notAfter) + " ", badge(...VALIDITY_BADGE[validity(sm)]))],
-        ["Publisher", sm.publisher],
-        ["Workload", sm.workload],
-        ["Version", sm.version && mono(sm.version)],
-        ["Artifact", sm.artifact],
-        ["Predicate", sm.predicateType && maybeLink(sm.predicateType)],
-      ])),
-      h("section", null, h("h3", null, `Claims (${sm.claims.length})`),
+      h(
+        "section",
+        null,
+        h("h3", null, "Endorsement"),
+        kv([
+          ["Subject", sm.subjectName],
+          ["SHA-256", sm.subjectDigest && mono(sm.subjectDigest)],
+          ["Subjects", sm.subjectCount !== 1 ? `${sm.subjectCount} (first shown)` : null],
+          ["Issued", fmtTime(sm.issuedOn)],
+          ["Valid from", fmtTime(sm.notBefore)],
+          ["Valid until", h("span", null, fmtTime(sm.notAfter) + " ", badge(...VALIDITY_BADGE[validity(sm)]))],
+          ["Publisher", sm.publisher],
+          ["Workload", sm.workload],
+          ["Version", sm.version && mono(sm.version)],
+          ["Artifact", sm.artifact],
+          ["Predicate", sm.predicateType && maybeLink(sm.predicateType)],
+        ]),
+      ),
+      h(
+        "section",
+        null,
+        h("h3", null, `Claims (${sm.claims.length})`),
         sm.claims.some((c) => claimDocumentUrl(c.type) !== null)
-          ? h("p", { class: "muted claims-note" }, "Titles are the headings of the linked documents, fetched from GitHub. They are not part of the log.")
+          ? h(
+              "p",
+              { class: "muted claims-note" },
+              "Titles are the headings of the linked documents, fetched from GitHub. They are not part of the log.",
+            )
           : null,
-        h("ul", { class: "claims" },
-        ...sm.claims.map((c) => h("li", null, claimHeading(c.type), maybeLink(c.type),
-          c.annotations && kv(Object.entries(c.annotations).map(
-            ([k, v]): [string, Child] => [k, typeof v === "string" ? v : JSON.stringify(v)])))))),
+        h(
+          "ul",
+          { class: "claims" },
+          ...sm.claims.map((c) =>
+            h(
+              "li",
+              null,
+              claimHeading(c.type),
+              maybeLink(c.type),
+              c.annotations &&
+                kv(
+                  Object.entries(c.annotations).map(([k, v]): [string, Child] => [
+                    k,
+                    typeof v === "string" ? v : JSON.stringify(v),
+                  ]),
+                ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 
   sections.push(
-    h("section", null, h("h3", null, "Signing key"),
+    h(
+      "section",
+      null,
+      h("h3", null, "Signing key"),
       kv([["SPKI SHA-256", e.keyFingerprint && mono(e.keyFingerprint)]]),
-      e.keyPem ? h("pre", null, e.keyPem) : null),
-    h("section", null, h("h3", null, "Log position"), kv([
-      ["Leaf index", String(e.index)],
-      ["Leaf hash", mono(hex(e.leafHash))],
-      ["Entry bundle", bundleUrl ? link(bundleUrl) : "—"],
-      ["Proof", proofControl(s, e)],
-    ])),
+      e.keyPem ? h("pre", null, e.keyPem) : null,
+    ),
+    h(
+      "section",
+      null,
+      h("h3", null, "Log position"),
+      kv([
+        ["Leaf index", String(e.index)],
+        ["Leaf hash", mono(hex(e.leafHash))],
+        ["Entry bundle", bundleUrl ? link(bundleUrl) : "—"],
+        ["Proof", proofControl(s, e)],
+      ]),
+    ),
   );
   const statementText = e.recordText === null ? null : statementTextOf(e.recordText);
   if (statementText) {
@@ -1066,9 +1312,15 @@ function detailSections(s: LogState, e: Entry): HTMLElement[] {
   if (e.recordText) {
     // Everything needed to re-check the entry by hand: its leaf hash is
     // SHA-256 of a zero byte followed by exactly this text.
-    sections.push(h("details", { class: "raw" },
-      // An entry that fails its leaf hash is what was served, not what was logged.
-      h("summary", null, e.inLog ? "Log entry as recorded" : "Entry as served (does not match its leaf hash)"), h("pre", { class: "wrap" }, e.recordText)));
+    sections.push(
+      h(
+        "details",
+        { class: "raw" },
+        // An entry that fails its leaf hash is what was served, not what was logged.
+        h("summary", null, e.inLog ? "Log entry as recorded" : "Entry as served (does not match its leaf hash)"),
+        h("pre", { class: "wrap" }, e.recordText),
+      ),
+    );
   }
   return sections;
 }
@@ -1088,37 +1340,73 @@ function renderDebug(fault: Fault | null): void {
     banner.replaceChildren(
       h("strong", null, `Simulated failure: ${fault.title}. `),
       `${fault.description} The failure is simulated inside this browser; the log itself is unaffected. `,
-      h("a", { href: href({ ...ui, fault: null, entry: null }) }, "Stop simulating"));
+      h("a", { href: href({ ...ui, fault: null, entry: null }) }, "Stop simulating"),
+    );
   }
-  const item = (id: string | null, title: string, description: string) => h("li", null,
-    h("a", { href: href({ ...logRoute(ui.origin), fault: id }), ...(id === ui.fault ? { "aria-current": "true" } : {}) }, title),
-    ` — ${description}`);
+  const item = (id: string | null, title: string, description: string) =>
+    h(
+      "li",
+      null,
+      h(
+        "a",
+        { href: href({ ...logRoute(ui.origin), fault: id }), ...(id === ui.fault ? { "aria-current": "true" } : {}) },
+        title,
+      ),
+      ` — ${description}`,
+    );
   $("debug-list").replaceChildren(
     item(null, "None", "Shows the log as served, without alterations."),
-    ...FAULTS.map((f) => item(f.id, f.title, f.description)));
+    ...FAULTS.map((f) => item(f.id, f.title, f.description)),
+  );
 }
 
 function init(): void {
   $("policy-source").replaceChildren(
-    mono(POLICY_SOURCE.target), " from ",
-    link(`${POLICY_SOURCE.repo}/tree/${POLICY_SOURCE.commit}`, `google-tlog-witness@${POLICY_SOURCE.commit.slice(0, 7)}`));
+    mono(POLICY_SOURCE.target),
+    " from ",
+    link(
+      `${POLICY_SOURCE.repo}/tree/${POLICY_SOURCE.commit}`,
+      `google-tlog-witness@${POLICY_SOURCE.commit.slice(0, 7)}`,
+    ),
+  );
   // A page that asks to be trusted as a verifier should say what it is.
-  $("build").replaceChildren(...(BUILD.commit
-    ? [link(`${BUILD.repo}/commit/${BUILD.commit}`, `tlog-viewer@${BUILD.commit.slice(0, 7)}`),
-      BUILD.dirty ? " with uncommitted changes" : "",
-      ". Its files can be checked against that source: see the ", link(`${BUILD.repo}#checking-the-deployed-site`, "README"), "."]
-    : ["a development build, not made from a recorded commit."]));
+  $("build").replaceChildren(
+    ...(BUILD.commit
+      ? [
+          link(`${BUILD.repo}/commit/${BUILD.commit}`, `tlog-viewer@${BUILD.commit.slice(0, 7)}`),
+          BUILD.dirty ? " with uncommitted changes" : "",
+          ". Its files can be checked against that source: see the ",
+          link(`${BUILD.repo}#checking-the-deployed-site`, "README"),
+          ".",
+        ]
+      : ["a development build, not made from a recorded commit."]),
+  );
 
   // Each control writes its value to the route; filtering then reads the route.
   const onFilter = (change: () => Partial<Route>) => () => {
     navigate({ ...change(), page: 0 }, "replace");
     applyFilter();
   };
-  $("q").addEventListener("input", onFilter(() => ({ q: $<HTMLInputElement>("q").value })));
-  $("f-validity").addEventListener("input", onFilter(() => ({ validity: $<HTMLSelectElement>("f-validity").value as Route["validity"] })));
-  $("f-publisher").addEventListener("input", onFilter(() => ({ publisher: $<HTMLSelectElement>("f-publisher").value })));
-  $("f-problems").addEventListener("input", onFilter(() => ({ problems: $<HTMLInputElement>("f-problems").checked })));
-  $("page-size").addEventListener("input", onFilter(() => ({ pageSize: Number($<HTMLSelectElement>("page-size").value) })));
+  $("q").addEventListener(
+    "input",
+    onFilter(() => ({ q: $<HTMLInputElement>("q").value })),
+  );
+  $("f-validity").addEventListener(
+    "input",
+    onFilter(() => ({ validity: $<HTMLSelectElement>("f-validity").value as Route["validity"] })),
+  );
+  $("f-publisher").addEventListener(
+    "input",
+    onFilter(() => ({ publisher: $<HTMLSelectElement>("f-publisher").value })),
+  );
+  $("f-problems").addEventListener(
+    "input",
+    onFilter(() => ({ problems: $<HTMLInputElement>("f-problems").checked })),
+  );
+  $("page-size").addEventListener(
+    "input",
+    onFilter(() => ({ pageSize: Number($<HTMLSelectElement>("page-size").value) })),
+  );
   $("page-first").addEventListener("click", () => goToPage(0));
   $("page-prev").addEventListener("click", () => goToPage(ui.page - 1));
   $("page-next").addEventListener("click", () => goToPage(ui.page + 1));
@@ -1160,7 +1448,9 @@ function init(): void {
     }
     if (ui.entry !== null) navigate({ entry: null }, "push");
   });
-  dialog.addEventListener("click", (ev) => { if (ev.target === dialog) dialog.close(); });
+  dialog.addEventListener("click", (ev) => {
+    if (ev.target === dialog) dialog.close();
+  });
 
   // The URL changed other than through a control: a link was followed, or
   // the back button pressed.
@@ -1182,7 +1472,9 @@ function init(): void {
 
   // Follow the log while the page is being looked at, and catch up when it
   // is looked at again.
-  setInterval(() => { if (!document.hidden) void refresh(); }, REFRESH_SECONDS * 1000);
+  setInterval(() => {
+    if (!document.hidden) void refresh();
+  }, REFRESH_SECONDS * 1000);
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden && Date.now() - lastChecked > REFRESH_SECONDS * 1000) void refresh();
   });

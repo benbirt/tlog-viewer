@@ -8,7 +8,15 @@ import { verifierFromPage } from "./gowasm.js";
 import { HttpError, LogClient } from "./tiles.js";
 import { type TileRef, verifierOver } from "./verifier.js";
 
-export type WorkerRequest = { op: "bundle"; base: string; fault: string | null; tile: TileRef; from: number; size: number; tileLeafHashes: Bytes };
+export type WorkerRequest = {
+  op: "bundle";
+  base: string;
+  fault: string | null;
+  tile: TileRef;
+  from: number;
+  size: number;
+  tileLeafHashes: Bytes;
+};
 
 export type WorkerResult = CheckedEntry[];
 
@@ -37,11 +45,13 @@ self.addEventListener("message", (ev: MessageEvent<{ id?: number; request: Worke
   if (id === undefined) return; // the module, for verifierFromPage
   handle(request).then(
     (result) => post({ id, result }),
-    (e: unknown) => post({
-      id,
-      error: {
-        message: e instanceof Error ? e.message : String(e),
-        ...(e instanceof HttpError ? { http: { url: e.url, status: e.status } } : {}),
-      },
-    }));
+    (e: unknown) =>
+      post({
+        id,
+        error: {
+          message: e instanceof Error ? e.message : String(e),
+          ...(e instanceof HttpError ? { http: { url: e.url, status: e.status } } : {}),
+        },
+      }),
+  );
 });

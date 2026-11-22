@@ -175,9 +175,20 @@ export function verifierOver(call: Call): Verifier {
 
     async checkpoint(policyText, raw, expectedOrigin) {
       const out = await ask<{
-        malformed?: string; ok: boolean; problems: string[]; warnings: string[]; text: string;
-        origin: string; size: string; hash: string; extensions: string[]; signatures: WireSignature[];
-        logSigned: boolean; quorum: QuorumNode; witnessedAt?: string; extensionsAuthenticated: boolean;
+        malformed?: string;
+        ok: boolean;
+        problems: string[];
+        warnings: string[];
+        text: string;
+        origin: string;
+        size: string;
+        hash: string;
+        extensions: string[];
+        signatures: WireSignature[];
+        logSigned: boolean;
+        quorum: QuorumNode;
+        witnessedAt?: string;
+        extensionsAuthenticated: boolean;
       }>("tlogCheckpoint", JSON.stringify({ policy: policyText, checkpoint: raw, expectedOrigin }));
       if (out.malformed !== undefined) throw new Error(`malformed checkpoint: ${out.malformed}`);
       const size = Number(out.size);
@@ -186,8 +197,13 @@ export function verifierOver(call: Call): Verifier {
         checkpoint: { origin: out.origin, size, hash: b64Decode(out.hash), extensions: out.extensions },
         text: out.text,
         signatures: out.signatures.map((s) => ({
-          name: s.name, keyId: s.keyId, role: s.role, witness: s.witness ?? null, algName: s.alg ?? null,
-          status: s.status, timestamp: s.timestamp !== undefined ? BigInt(s.timestamp) : null,
+          name: s.name,
+          keyId: s.keyId,
+          role: s.role,
+          witness: s.witness ?? null,
+          algName: s.alg ?? null,
+          status: s.status,
+          timestamp: s.timestamp !== undefined ? BigInt(s.timestamp) : null,
         })),
         logSigned: out.logSigned,
         quorum: out.quorum,
@@ -203,7 +219,8 @@ export function verifierOver(call: Call): Verifier {
 
     async splitBundle(bundle) {
       const reply = await call("tlogBundle", bundle);
-      if (typeof reply === "string") throw new Error(`malformed entry bundle: ${(JSON.parse(reply) as { error: string }).error}`);
+      if (typeof reply === "string")
+        throw new Error(`malformed entry bundle: ${(JSON.parse(reply) as { error: string }).error}`);
       return reply as Bytes[];
     },
 
@@ -211,14 +228,24 @@ export function verifierOver(call: Call): Verifier {
 
     async tree(leafHashes, size) {
       const out = await ask<{ error?: string; root: string; interior: (Omit<Tile, "data"> & { data: string })[] }>(
-        "tlogTree", leafHashes.subarray(0, size * 32), size);
+        "tlogTree",
+        leafHashes.subarray(0, size * 32),
+        size,
+      );
       if (out.error !== undefined) throw new Error(`could not hash the tree: ${out.error}`);
       return { root: b64Decode(out.root), interior: out.interior.map((t) => ({ ...t, data: fromHex(t.data) })) };
     },
 
     async prove(leafHashes, size, index, checkpoint) {
-      const out = await ask<{ error?: string; proof?: string }>("tlogProve", leafHashes.subarray(0, size * 32), size, index, checkpoint);
-      if (out.error !== undefined || out.proof === undefined) throw new Error(`could not write the proof: ${out.error}`);
+      const out = await ask<{ error?: string; proof?: string }>(
+        "tlogProve",
+        leafHashes.subarray(0, size * 32),
+        size,
+        index,
+        checkpoint,
+      );
+      if (out.error !== undefined || out.proof === undefined)
+        throw new Error(`could not write the proof: ${out.error}`);
       return out.proof;
     },
 
@@ -252,14 +279,20 @@ export function startVerifier(module: Promise<WebAssembly.Module>): Verifier {
     if (ev.data.error !== undefined) p.reject(new Error(ev.data.error));
     else p.resolve(ev.data.reply);
   });
-  worker.addEventListener("error", (ev) => fail(new Error(`the verifier could not be loaded: ${ev.message || "worker error"}`)));
+  worker.addEventListener("error", (ev) =>
+    fail(new Error(`the verifier could not be loaded: ${ev.message || "worker error"}`)),
+  );
   module.then(
     (m) => worker.postMessage({ module: m }),
-    (e: unknown) => fail(new Error(`the verifier could not be loaded: ${e instanceof Error ? e.message : String(e)}`)));
-  return verifierOver((fn, ...args) => new Promise((resolve, reject) => {
-    if (broken) return reject(broken);
-    const id = nextId++;
-    pending.set(id, { resolve, reject });
-    worker.postMessage({ id, fn, args });
-  }));
+    (e: unknown) => fail(new Error(`the verifier could not be loaded: ${e instanceof Error ? e.message : String(e)}`)),
+  );
+  return verifierOver(
+    (fn, ...args) =>
+      new Promise((resolve, reject) => {
+        if (broken) return reject(broken);
+        const id = nextId++;
+        pending.set(id, { resolve, reject });
+        worker.postMessage({ id, fn, args });
+      }),
+  );
 }

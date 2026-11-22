@@ -10,13 +10,18 @@ let commit: string | null = null;
 let dirty = false;
 const statusFile = process.env.BAZEL_STABLE_STATUS_FILE;
 if (statusFile) {
-  const status = new Map(readFileSync(join(process.env.JS_BINARY__EXECROOT ?? "", statusFile), "utf8")
-    .split("\n").filter((l) => l.includes(" ")).map((l): [string, string] => {
-      const i = l.indexOf(" ");
-      return [l.slice(0, i), l.slice(i + 1)];
-    }));
+  const status = new Map(
+    readFileSync(join(process.env.JS_BINARY__EXECROOT ?? "", statusFile), "utf8")
+      .split("\n")
+      .filter((l) => l.includes(" "))
+      .map((l): [string, string] => {
+        const i = l.indexOf(" ");
+        return [l.slice(0, i), l.slice(i + 1)];
+      }),
+  );
   const stamped = status.get("STABLE_GIT_COMMIT") ?? "";
-  if (!/^[0-9a-f]{40}$/.test(stamped)) throw new Error("stamped build without STABLE_GIT_COMMIT; is --workspace_status_command set?");
+  if (!/^[0-9a-f]{40}$/.test(stamped))
+    throw new Error("stamped build without STABLE_GIT_COMMIT; is --workspace_status_command set?");
   commit = stamped;
   dirty = status.get("STABLE_GIT_DIRTY") === "true";
 }

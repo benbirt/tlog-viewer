@@ -21,14 +21,20 @@ before(async () => {
 after(() => browser?.close());
 
 /** Runs a test in a fresh tab, on a copy of the world it may change freely. */
-function viewerTest(name: string, fn: (v: Viewer, w: World) => Promise<void>, options?: Parameters<typeof Viewer.open>[2]): void {
+function viewerTest(
+  name: string,
+  fn: (v: Viewer, w: World) => Promise<void>,
+  options?: Parameters<typeof Viewer.open>[2],
+): void {
   test(name, async () => {
     const w = { ...world, main: world.main.fork() };
     const v = await Viewer.open(browser, w, options);
     try {
       await fn(v, w);
     } catch (e) {
-      console.error(`page state at failure: ${await v.outcome().catch(() => "?")} | ${await v.text("#notice").catch(() => "?")} | ${v.errors.join("; ")}`);
+      console.error(
+        `page state at failure: ${await v.outcome().catch(() => "?")} | ${await v.text("#notice").catch(() => "?")} | ${v.errors.join("; ")}`,
+      );
       throw e;
     } finally {
       await v.close();
@@ -41,8 +47,14 @@ viewerTest("a healthy log verifies and is listed newest first", async (v) => {
   assert.equal(await v.outcome(), "ok ok ok ok");
   const s = await v.steps();
   assert.match(s.log.text, /Signed by the log \(Ed25519 \+ ML-DSA-44\)/);
-  assert.match(s.quorum.text, /3 valid cosignatures; 3 of 3 in “two-of-three”, 2 required\. Witnessed (just now|\d+ minutes? ago)\./);
-  assert.match(s.root.text, /Recomputed from 300 leaf hashes; matches the checkpoint\. The log's 1 interior tile matches too\./);
+  assert.match(
+    s.quorum.text,
+    /3 valid cosignatures; 3 of 3 in “two-of-three”, 2 required\. Witnessed (just now|\d+ minutes? ago)\./,
+  );
+  assert.match(
+    s.root.text,
+    /Recomputed from 300 leaf hashes; matches the checkpoint\. The log's 1 interior tile matches too\./,
+  );
   assert.match(s.entries.text, /All 300 are in the tree/);
   assert.equal(await v.text("#count"), "300 entries");
   assert.deepEqual((await v.rows()).slice(0, 3), [299, 298, 297]);
@@ -96,7 +108,10 @@ for (const fault of FAULTS) {
     assert.equal(await v.outcome(), outcome);
     assert.equal(await v.page.locator("#rows .badge.bad").count(), failedRows);
     // A simulation is always announced.
-    assert.match(await v.text("#debug-banner"), new RegExp(`Simulated failure: ${fault.title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+    assert.match(
+      await v.text("#debug-banner"),
+      new RegExp(`Simulated failure: ${fault.title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
+    );
     // Where the log's contents may not be shown, they are not.
     if (/none$/.test(outcome)) assert.equal(await v.page.locator("#entries").isHidden(), true);
   });
@@ -127,8 +142,14 @@ viewerTest("everything about the view is in the address, and comes back from it"
   const hash = await v.hash();
   const params = new URLSearchParams(hash.slice(1));
   assert.deepEqual(Object.fromEntries(params), {
-    log: "test.example/log/0", q: "workload-2", validity: "current", publisher: PUBLISHERS[0]!,
-    page: "2", per: "25", checkpoint: "1", entry: String(third),
+    log: "test.example/log/0",
+    q: "workload-2",
+    validity: "current",
+    publisher: PUBLISHERS[0]!,
+    page: "2",
+    per: "25",
+    checkpoint: "1",
+    entry: String(third),
   });
   const status = await v.text("#page-status");
   const rows = await v.rows();
@@ -190,7 +211,10 @@ viewerTest("an entry's drawer shows its checks, its statement and the entry as r
   const body = await v.text("#detail-body");
   assert.match(body, /matches leaf 123 of the tree whose Merkle root the log signed and the witnesses cosigned/);
   assert.match(body, /The recorded SHA-256 matches the statement/);
-  assert.match(body, /verifies under the key below\. This page has no list of endorser keys, so it does not check whether that key is trusted/);
+  assert.match(
+    body,
+    /verifies under the key below\. This page has no list of endorser keys, so it does not check whether that key is trusted/,
+  );
   assert.match(body, /workload-3/);
   assert.match(body, /"predicateType": "https:\/\/project-oak\.github\.io\/oak\/tr\/endorsement\/v1"/);
   assert.match(body, /-----BEGIN PUBLIC KEY-----/);
@@ -201,7 +225,9 @@ viewerTest("an entry's drawer shows its checks, its statement and the entry as r
 viewerTest("the drawer does not outlive the log it was opened on", async (v, w) => {
   await v.goto("#log=test.example/log/0&entry=5");
   await v.drawer(true);
-  await v.page.evaluate((o) => { location.hash = `#log=${o}&entry=5`; }, w.unpublished);
+  await v.page.evaluate((o) => {
+    location.hash = `#log=${o}&entry=5`;
+  }, w.unpublished);
   await v.drawer(false);
   assert.equal(await v.outcome(), "warn none none none");
 });
@@ -215,27 +241,36 @@ async function nextCheck(v: Viewer): Promise<void> {
   await v.settled();
 }
 
-viewerTest("a log that grows is followed, fetching only what changed", async (v, w) => {
-  await v.page.clock.install();
-  await v.goto();
-  assert.equal(await v.text("#count"), "300 entries");
-  v.takeRequests();
+viewerTest(
+  "a log that grows is followed, fetching only what changed",
+  async (v, w) => {
+    await v.page.clock.install();
+    await v.goto();
+    assert.equal(await v.text("#count"), "300 entries");
+    v.takeRequests();
 
-  await w.main.append(20);
-  await v.serve(w.main);
-  await nextCheck(v);
-  assert.equal(await v.outcome(), "ok ok ok ok");
-  assert.equal(await v.text("#count"), "320 entries");
-  assert.deepEqual((await v.rows()).slice(0, 2), [319, 318]);
-  assert.match((await v.steps()).root.text, /Recomputed from 320 leaf hashes/);
-  // The first tile is full and cannot have changed: it is not asked for again.
-  assert.deepEqual(v.takeRequests().sort(), ["checkpoint", "tile/0/001.p/64", "tile/1/000.p/1", "tile/entries/001.p/64"]);
+    await w.main.append(20);
+    await v.serve(w.main);
+    await nextCheck(v);
+    assert.equal(await v.outcome(), "ok ok ok ok");
+    assert.equal(await v.text("#count"), "320 entries");
+    assert.deepEqual((await v.rows()).slice(0, 2), [319, 318]);
+    assert.match((await v.steps()).root.text, /Recomputed from 320 leaf hashes/);
+    // The first tile is full and cannot have changed: it is not asked for again.
+    assert.deepEqual(v.takeRequests().sort(), [
+      "checkpoint",
+      "tile/0/001.p/64",
+      "tile/1/000.p/1",
+      "tile/entries/001.p/64",
+    ]);
 
-  // Nothing new: only the checkpoint is fetched.
-  await nextCheck(v);
-  assert.deepEqual(v.takeRequests(), ["checkpoint"]);
-  assert.equal(await v.text("#count"), "320 entries");
-}, {});
+    // Nothing new: only the checkpoint is fetched.
+    await nextCheck(v);
+    assert.deepEqual(v.takeRequests(), ["checkpoint"]);
+    assert.equal(await v.text("#count"), "320 entries");
+  },
+  {},
+);
 
 viewerTest("a log that rewrites a published entry is reported and no longer followed", async (v, w) => {
   await v.page.clock.install();
@@ -245,7 +280,10 @@ viewerTest("a log that rewrites a published entry is reported and no longer foll
   await v.serve(w.main);
   await nextCheck(v);
   assert.equal(await v.outcome(), "ok ok fail ok");
-  assert.match(await v.text("#notice"), /now serves a different leaf hash for entry 280, which it had already published/);
+  assert.match(
+    await v.text("#notice"),
+    /now serves a different leaf hash for entry 280, which it had already published/,
+  );
   assert.equal(await v.text("#checked"), "Stopped following");
   assert.equal(await v.text("#count"), "300 entries");
 });
@@ -301,19 +339,27 @@ viewerTest("a checkpoint not witnessed for a day draws a warning", async (v, w) 
   assert.match((await v.steps()).quorum.text, /Witnessed 2 days ago\. More than 24 hours old/);
 });
 
-viewerTest("nothing spills off a phone screen", async (v) => {
-  await v.goto("#log=test.example/log/0&checkpoint=1");
-  // How far the content is wider than the space it has, scrollbar excluded.
-  const overflow = () => v.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
-  assert.ok(await overflow() <= 0);
-  // The header row has exactly as many visible cells as each row beneath it.
-  const cells = (selector: string) => v.page.locator(selector).first().evaluate((row) =>
-    [...row.children].filter((c) => getComputedStyle(c).display !== "none").length);
-  assert.equal(await cells(".row.head"), await cells("#rows .row"));
-  await v.page.locator("#rows .row a").first().click();
-  await v.drawer(true);
-  assert.ok(await overflow() <= 0);
-}, { width: 390, height: 844 });
+viewerTest(
+  "nothing spills off a phone screen",
+  async (v) => {
+    await v.goto("#log=test.example/log/0&checkpoint=1");
+    // How far the content is wider than the space it has, scrollbar excluded.
+    const overflow = () =>
+      v.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    assert.ok((await overflow()) <= 0);
+    // The header row has exactly as many visible cells as each row beneath it.
+    const cells = (selector: string) =>
+      v.page
+        .locator(selector)
+        .first()
+        .evaluate((row) => [...row.children].filter((c) => getComputedStyle(c).display !== "none").length);
+    assert.equal(await cells(".row.head"), await cells("#rows .row"));
+    await v.page.locator("#rows .row a").first().click();
+    await v.drawer(true);
+    assert.ok((await overflow()) <= 0);
+  },
+  { width: 390, height: 844 },
+);
 
 viewerTest("opening the drawer does not move the page behind it", async (v) => {
   await v.goto();
@@ -344,7 +390,9 @@ viewerTest("the signing keys in use are listed, and lead to their entries", asyn
   await v.page.waitForFunction(() => location.hash.includes("keys=1"));
   const rows = v.page.locator("#keys-body tbody tr");
   assert.equal(await rows.count(), 2);
-  const cells = await rows.evaluateAll((trs) => trs.map((tr) => [...tr.children].map((td) => (td as HTMLElement).innerText.trim())));
+  const cells = await rows.evaluateAll((trs) =>
+    trs.map((tr) => [...tr.children].map((td) => (td as HTMLElement).innerText.trim())),
+  );
   assert.deepEqual(cells.map((c) => c[1]).sort(), ["100", "200"]);
   assert.ok(cells.every((c) => /new$/.test(c[0]!) && c[2] === "0" && c[6] === "4"));
   assert.match(await v.text("#keys-body"), /does not check whether any of them is trusted/);
@@ -369,12 +417,22 @@ viewerTest("an entry's tlog-proof can be downloaded and checks out offline", asy
   // With nothing but the proof, the entry and the policy: the checkpoint
   // satisfies the policy, and the entry hashes up to its root.
   assert.match(proof, /^c2sp\.org\/tlog-proof@v1\nindex 123\n/);
-  assert.deepEqual(await verifier.checkProof(w.policy, proof, await verifier.leafHash(w.main.entries[123]!)),
-    { ok: true, index: 123, origin: w.main.origin, size: 300 });
+  assert.deepEqual(await verifier.checkProof(w.policy, proof, await verifier.leafHash(w.main.entries[123]!)), {
+    ok: true,
+    index: 123,
+    origin: w.main.origin,
+    size: 300,
+  });
   // The same proof does not vouch for a different entry, nor with too few cosignatures left on it.
   assert.equal((await verifier.checkProof(w.policy, proof, await verifier.leafHash(w.main.entries[124]!))).ok, false);
-  const fewer = proof.split("\n").filter((l) => !l.startsWith("— two.witness.example ") && !l.startsWith("— three.witness.example ")).join("\n");
-  assert.match((await verifier.checkProof(w.policy, fewer, await verifier.leafHash(w.main.entries[123]!))).error ?? "", /./);
+  const fewer = proof
+    .split("\n")
+    .filter((l) => !l.startsWith("— two.witness.example ") && !l.startsWith("— three.witness.example "))
+    .join("\n");
+  assert.match(
+    (await verifier.checkProof(w.policy, fewer, await verifier.leafHash(w.main.entries[123]!))).error ?? "",
+    /./,
+  );
 
   // No proof is offered from simulated data.
   await v.goto("#log=test.example/log/0&entry=123&fault=witness-signature");
@@ -390,15 +448,26 @@ viewerTest("claims are titled from the documents they link to, where those can b
   // workload.md is not served: its claim keeps its link and gets no title.
   await v.goto("#log=test.example/log/0&entry=42");
   await v.drawer(true);
-  await v.page.waitForFunction(() => [...document.querySelectorAll(".claim-title")].filter((el) => el.textContent).length === 2);
-  assert.deepEqual(await v.page.$$eval(".claim-title", (els) => els.map((el) => el.textContent)), ["Publisher ID", "", "MPMs"]);
-  assert.match(await v.text("#detail-body"), /Titles are the headings of the linked documents, fetched from GitHub\. They are not part of the log\./);
+  await v.page.waitForFunction(
+    () => [...document.querySelectorAll(".claim-title")].filter((el) => el.textContent).length === 2,
+  );
+  assert.deepEqual(await v.page.$$eval(".claim-title", (els) => els.map((el) => el.textContent)), [
+    "Publisher ID",
+    "",
+    "MPMs",
+  ]);
+  assert.match(
+    await v.text("#detail-body"),
+    /Titles are the headings of the linked documents, fetched from GitHub\. They are not part of the log\./,
+  );
   assert.equal(await v.page.locator("ul.claims a").count(), 3);
 });
 
 viewerTest("the verifier is the Go implementation, fetched once and run off the page's thread", async (v) => {
   const wasm: string[] = [];
-  v.page.on("request", (r) => { if (r.url().endsWith(".wasm")) wasm.push(new URL(r.url()).pathname); });
+  v.page.on("request", (r) => {
+    if (r.url().endsWith(".wasm")) wasm.push(new URL(r.url()).pathname);
+  });
   await v.goto();
   assert.equal(await v.outcome(), "ok ok ok ok");
   await v.goto("#log=test.example/log/1");

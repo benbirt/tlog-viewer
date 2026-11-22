@@ -28,8 +28,20 @@ export interface CheckedEntry extends Omit<DecodedEntry, "statement" | "statemen
 function haystack(index: number, e: DecodedEntry): string {
   const s = e.summary;
   if (!s) return String(index);
-  return [index, s.subjectName, s.subjectDigest, s.workload, s.version, s.publisher, s.artifact,
-    e.keyFingerprint, ...s.claims.map((c) => c.type)].filter((x) => x != null).join("\n").toLowerCase();
+  return [
+    index,
+    s.subjectName,
+    s.subjectDigest,
+    s.workload,
+    s.version,
+    s.publisher,
+    s.artifact,
+    e.keyFingerprint,
+    ...s.claims.map((c) => c.type),
+  ]
+    .filter((x) => x != null)
+    .join("\n")
+    .toLowerCase();
 }
 
 /**
@@ -39,11 +51,17 @@ function haystack(index: number, e: DecodedEntry): string {
  * verifier splits the bundle and hashes the entries.
  */
 export async function checkBundle(
-  client: LogClient, verifier: Pick<Verifier, "splitBundle" | "leafHash">, tile: TileRef, from: number, size: number,
-  tileLeafHashes: Bytes, fault: Fault | null,
+  client: LogClient,
+  verifier: Pick<Verifier, "splitBundle" | "leafHash">,
+  tile: TileRef,
+  from: number,
+  size: number,
+  tileLeafHashes: Bytes,
+  fault: Fault | null,
 ): Promise<CheckedEntry[]> {
   const bundle = await verifier.splitBundle(await client.entryBundle(tile));
-  if (bundle.length !== tile.width) throw new Error(`entry bundle ${tile.entries} has ${bundle.length} entries, want ${tile.width}`);
+  if (bundle.length !== tile.width)
+    throw new Error(`entry bundle ${tile.entries} has ${bundle.length} entries, want ${tile.width}`);
   const altered = fault?.entry ? faultTargets(size) : [];
   const out: CheckedEntry[] = [];
   for (const [i, served] of bundle.entries()) {

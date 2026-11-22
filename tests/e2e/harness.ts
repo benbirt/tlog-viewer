@@ -11,14 +11,21 @@ import type { TestLog, World } from "./testlog.js";
 
 export const SITE = "https://viewer.test/";
 const siteDir = fileURLToPath(new URL("../../site/", import.meta.url));
-const TYPES: Record<string, string> = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".wasm": "application/wasm" };
+const TYPES: Record<string, string> = {
+  ".html": "text/html",
+  ".js": "text/javascript",
+  ".css": "text/css",
+  ".wasm": "application/wasm",
+};
 
 /** Finds Chrome: $CHROME_BIN, else the usual names on $PATH and in the usual places. */
 function chromePath(): string {
   const names = ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"];
   const dirs = [
     ...(process.env.PATH ?? "").split(delimiter),
-    "/usr/bin", "/usr/local/bin", "/run/current-system/sw/bin",
+    "/usr/bin",
+    "/usr/local/bin",
+    "/run/current-system/sw/bin",
     ...(process.env.USER ? [`/etc/profiles/per-user/${process.env.USER}/bin`] : []),
     ...(process.env.HOME ? [join(process.env.HOME, ".nix-profile/bin")] : []),
   ];
@@ -57,26 +64,43 @@ export class Viewer {
   /** Errors the page raised or logged, for explaining a failed test. */
   readonly errors: string[] = [];
 
-  private constructor(readonly context: BrowserContext, readonly page: Page, private readonly world: World) {}
+  private constructor(
+    readonly context: BrowserContext,
+    readonly page: Page,
+    private readonly world: World,
+  ) {}
 
-  static async open(browser: Browser, world: World, options: { width?: number; height?: number } = {}): Promise<Viewer> {
-    const context = await browser.newContext({ viewport: { width: options.width ?? 1280, height: options.height ?? 900 } });
+  static async open(
+    browser: Browser,
+    world: World,
+    options: { width?: number; height?: number } = {},
+  ): Promise<Viewer> {
+    const context = await browser.newContext({
+      viewport: { width: options.width ?? 1280, height: options.height ?? 900 },
+    });
     const page = await context.newPage();
     const v = new Viewer(context, page, world);
     page.on("pageerror", (e) => v.errors.push(e.message));
-    page.on("console", (m) => { if (m.type() === "error") v.errors.push(m.text()); });
+    page.on("console", (m) => {
+      if (m.type() === "error") v.errors.push(m.text());
+    });
     await context.route("**/*", (route) => {
       const url = new URL(route.request().url());
       if (url.origin + "/" === SITE) {
         const path = url.pathname === "/" ? "/index.html" : url.pathname;
         if (path === "/js/policy_data.js") {
           const source = { repo: "https://example.com/policy", commit: "0".repeat(40), target: "//test:policy" };
-          return route.fulfill({ contentType: "text/javascript", body:
-            `export const POLICY_TEXT = ${JSON.stringify(world.policy)};\nexport const POLICY_SOURCE = ${JSON.stringify(source)};\n` });
+          return route.fulfill({
+            contentType: "text/javascript",
+            body: `export const POLICY_TEXT = ${JSON.stringify(world.policy)};\nexport const POLICY_SOURCE = ${JSON.stringify(source)};\n`,
+          });
         }
         const file = join(siteDir, path);
         if (!existsSync(file) || v.missing.has(path)) return route.fulfill({ status: 404, body: "not found" });
-        return route.fulfill({ contentType: TYPES[extname(file)] ?? "application/octet-stream", body: readFileSync(file) });
+        return route.fulfill({
+          contentType: TYPES[extname(file)] ?? "application/octet-stream",
+          body: readFileSync(file),
+        });
       }
       const cors = { "access-control-allow-origin": "*" };
       if (url.hostname === "www.gstatic.com") {
@@ -131,16 +155,21 @@ export class Viewer {
   async settled(): Promise<void> {
     await this.page.waitForFunction(() => {
       const steps = [...document.querySelectorAll<HTMLElement>(".step")];
-      return !!steps[0]!.dataset.state && !steps.some((s) => s.dataset.state === "busy") &&
-        !document.querySelector("#rows .row.pending:not(.unloaded)");
+      return (
+        !!steps[0]!.dataset.state &&
+        !steps.some((s) => s.dataset.state === "busy") &&
+        !document.querySelector("#rows .row.pending:not(.unloaded)")
+      );
     });
   }
 
   async steps(): Promise<{ log: StepState; quorum: StepState; root: StepState; entries: StepState }> {
-    const all = await this.page.$$eval(".step", (els) => els.map((el) => ({
-      state: (el as HTMLElement).dataset.state || "none",
-      text: el.querySelector("p")!.textContent ?? "",
-    })));
+    const all = await this.page.$$eval(".step", (els) =>
+      els.map((el) => ({
+        state: (el as HTMLElement).dataset.state || "none",
+        text: el.querySelector("p")!.textContent ?? "",
+      })),
+    );
     return { log: all[0]!, quorum: all[1]!, root: all[2]!, entries: all[3]! };
   }
 
@@ -156,7 +185,10 @@ export class Viewer {
 
   /** Waits for the entry drawer to be open or closed. */
   async drawer(open: boolean): Promise<void> {
-    await this.page.waitForFunction((want) => document.querySelector<HTMLDialogElement>("#detail")!.open === want, open);
+    await this.page.waitForFunction(
+      (want) => document.querySelector<HTMLDialogElement>("#detail")!.open === want,
+      open,
+    );
   }
 
   hash(): Promise<string> {

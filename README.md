@@ -170,14 +170,14 @@ particular visitor; only checking the files you were served does that.
 Everything that can go stale is updated by pull requests that merge themselves
 once CI passes:
 
-| What | Updated by | When |
-| --- | --- | --- |
-| google-tlog-witness commit (the trust policy) | `bazel-updates.yaml` | daily |
-| `.bazelversion` | `bazel-updates.yaml` | daily |
-| Bazel modules (`bazel_dep` versions) | `bazel-updates.yaml` | daily |
-| Node, within its major version | `bazel-updates.yaml` | daily |
-| rules_tinygo commit | `bazel-updates.yaml` | daily |
-| npm packages, Go modules, GitHub Actions | Dependabot, merged by `dependabot-auto-merge.yaml` | weekly |
+| What                                          | Updated by                                         | When   |
+| --------------------------------------------- | -------------------------------------------------- | ------ |
+| google-tlog-witness commit (the trust policy) | `bazel-updates.yaml`                               | daily  |
+| `.bazelversion`                               | `bazel-updates.yaml`                               | daily  |
+| Bazel modules (`bazel_dep` versions)          | `bazel-updates.yaml`                               | daily  |
+| Node, within its major version                | `bazel-updates.yaml`                               | daily  |
+| rules_tinygo commit                           | `bazel-updates.yaml`                               | daily  |
+| npm packages, Go modules, GitHub Actions      | Dependabot, merged by `dependabot-auto-merge.yaml` | weekly |
 
 `bazel-updates.yaml` calls the shared workflow in
 [benbirt/workflows](https://github.com/benbirt/workflows), which holds the
