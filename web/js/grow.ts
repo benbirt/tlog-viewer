@@ -22,18 +22,27 @@ export type Growth =
  * rather than re-read, that check fails if the log has rewritten any of them,
  * which makes it a proof that the new tree extends the old one.
  */
-export async function extendLeafHashes(client: LogClient, tiles: TileRef[], old: Bytes, oldSize: number, newSize: number): Promise<Growth> {
+export async function extendLeafHashes(
+  client: LogClient,
+  tiles: TileRef[],
+  old: Bytes,
+  oldSize: number,
+  newSize: number,
+): Promise<Growth> {
   if (newSize < oldSize || old.length < oldSize * 32) throw new Error("cannot extend to a smaller tree");
   const leafHashes = new Uint8Array(newSize * 32);
   leafHashes.set(old.subarray(0, oldSize * 32));
   let rewritten: number | null = null;
-  await Promise.all(tiles.map(async (t) => {
-    const tile = await client.hashTile(t);
-    for (let i = t.first; i < Math.min(oldSize, t.first + t.width); i++) {
-      const served = tile.subarray((i - t.first) * 32, (i - t.first + 1) * 32);
-      if (!bytesEqual(served, old.subarray(i * 32, i * 32 + 32)) && (rewritten === null || i < rewritten)) rewritten = i;
-    }
-    leafHashes.set(tile, t.first * 32);
-  }));
+  await Promise.all(
+    tiles.map(async (t) => {
+      const tile = await client.hashTile(t);
+      for (let i = t.first; i < Math.min(oldSize, t.first + t.width); i++) {
+        const served = tile.subarray((i - t.first) * 32, (i - t.first + 1) * 32);
+        if (!bytesEqual(served, old.subarray(i * 32, i * 32 + 32)) && (rewritten === null || i < rewritten))
+          rewritten = i;
+      }
+      leafHashes.set(tile, t.first * 32);
+    }),
+  );
   return rewritten === null ? { kind: "extended", leafHashes } : { kind: "rewritten", index: rewritten };
 }

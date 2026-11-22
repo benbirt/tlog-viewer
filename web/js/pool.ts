@@ -24,7 +24,10 @@ export class WorkerPool {
   private nextId = 0;
 
   /** @param module The verifier, compiled; each worker runs its own instance. */
-  constructor(module: Promise<WebAssembly.Module>, size: number = Math.max(1, Math.min(4, navigator.hardwareConcurrency || 2))) {
+  constructor(
+    module: Promise<WebAssembly.Module>,
+    size: number = Math.max(1, Math.min(4, navigator.hardwareConcurrency || 2)),
+  ) {
     for (let i = 0; i < size; i++) {
       const slot = { worker: new Worker(new URL("./worker.js", import.meta.url), { type: "module" }), busy: 0 };
       slot.worker.addEventListener("message", (ev: MessageEvent<WorkerReply>) => {
@@ -40,7 +43,12 @@ export class WorkerPool {
         // A worker that fails outright takes all its work with it.
         this.fail(new Error(`worker failed: ${ev.message || "could not be loaded"}`));
       });
-      module.then((m) => slot.worker.postMessage({ module: m }), () => { /* the page reports a verifier that cannot load */ });
+      module.then(
+        (m) => slot.worker.postMessage({ module: m }),
+        () => {
+          /* the page reports a verifier that cannot load */
+        },
+      );
       this.workers.push(slot);
     }
   }
@@ -61,7 +69,14 @@ export class WorkerPool {
   }
 
   /** Fetches and checks one entry bundle; see checkBundle. */
-  bundle(args: { base: string; fault: string | null; tile: TileRef; from: number; size: number; tileLeafHashes: Bytes }): Promise<CheckedEntry[]> {
+  bundle(args: {
+    base: string;
+    fault: string | null;
+    tile: TileRef;
+    from: number;
+    size: number;
+    tileLeafHashes: Bytes;
+  }): Promise<CheckedEntry[]> {
     return this.run({ op: "bundle", ...args });
   }
 

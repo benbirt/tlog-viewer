@@ -21,8 +21,12 @@ function leaves(n: number): Bytes {
 /** A log client serving a tree of these leaves, recording what was asked for. */
 async function serve(all: Bytes): Promise<{ client: LogClient; fetched: string[] }> {
   const size = all.length / 32;
-  const tiles = new Map((await verifier.layout(0, size)).tiles.map((t) =>
-    ["https://log.example/" + t.path, all.subarray(t.first * 32, (t.first + t.width) * 32)]));
+  const tiles = new Map(
+    (await verifier.layout(0, size)).tiles.map((t) => [
+      "https://log.example/" + t.path,
+      all.subarray(t.first * 32, (t.first + t.width) * 32),
+    ]),
+  );
   const fetched: string[] = [];
   const client = new LogClient("https://log.example/", async (url) => {
     fetched.push(url.replace("https://log.example/", ""));

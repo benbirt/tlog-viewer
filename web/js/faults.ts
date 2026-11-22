@@ -52,12 +52,16 @@ function flipFirstByte(bytes: Bytes): Bytes {
  * position among those of its kind; it returns "keep", "corrupt" or "drop".
  */
 function editSignatures(
-  raw: string, edit: (line: { isLog: boolean; nth: number; last: boolean }) => "keep" | "corrupt" | "drop",
+  raw: string,
+  edit: (line: { isLog: boolean; nth: number; last: boolean }) => "keep" | "corrupt" | "drop",
 ): string {
   const split = raw.lastIndexOf("\n\n");
   if (split < 0) return raw;
   const origin = raw.slice(0, raw.indexOf("\n"));
-  const lines = raw.slice(split + 2).split("\n").filter((l) => l !== "");
+  const lines = raw
+    .slice(split + 2)
+    .split("\n")
+    .filter((l) => l !== "");
   const counts = { log: 0, witness: 0 };
   const out: string[] = [];
   lines.forEach((line, i) => {
@@ -84,49 +88,58 @@ export const FAULTS: Fault[] = [
   {
     id: "log-signature",
     title: "Invalid log signature",
-    description: "Every signature by the log is corrupted. The checkpoint is rejected and none of the log's entries are shown.",
+    description:
+      "Every signature by the log is corrupted. The checkpoint is rejected and none of the log's entries are shown.",
     checkpoint: (raw) => editSignatures(raw, (l) => (l.isLog ? "corrupt" : "keep")),
   },
   {
     id: "one-log-signature",
     title: "One invalid log signature",
-    description: "The first of the log's signatures is corrupted. If the log signs with a second key, the checkpoint still passes with a warning.",
+    description:
+      "The first of the log's signatures is corrupted. If the log signs with a second key, the checkpoint still passes with a warning.",
     checkpoint: (raw) => editSignatures(raw, (l) => (l.isLog && l.nth === 0 ? "corrupt" : "keep")),
   },
   {
     id: "witness-signature",
     title: "One invalid cosignature",
-    description: "The last cosignature is corrupted. If the remaining cosignatures still meet the quorum, the checkpoint passes with a warning.",
+    description:
+      "The last cosignature is corrupted. If the remaining cosignatures still meet the quorum, the checkpoint passes with a warning.",
     checkpoint: (raw) => editSignatures(raw, (l) => (l.last && !l.isLog ? "corrupt" : "keep")),
   },
   {
     id: "no-quorum",
     title: "Too few cosignatures",
-    description: "All cosignatures but the first are removed. If the quorum requires more than one, it is not met and none of the log's entries are shown.",
+    description:
+      "All cosignatures but the first are removed. If the quorum requires more than one, it is not met and none of the log's entries are shown.",
     checkpoint: (raw) => editSignatures(raw, (l) => (l.isLog || l.nth === 0 ? "keep" : "drop")),
   },
   {
     id: "wrong-log",
     title: "Another log's checkpoint",
-    description: "The checkpoint of another log in the trust policy is served instead of this log's. It is validly signed and witnessed, but for the wrong log.",
+    description:
+      "The checkpoint of another log in the trust policy is served instead of this log's. It is validly signed and witnessed, but for the wrong log.",
     checkpointFromOtherLog: true,
   },
   {
     id: "stale-checkpoint",
     title: "Checkpoint not witnessed recently",
-    description: "This page's clock is moved forward three days, so the cosignatures are more than 24 hours old. Validity periods are checked against that date too.",
+    description:
+      "This page's clock is moved forward three days, so the cosignatures are more than 24 hours old. Validity periods are checked against that date too.",
     clockOffsetMs: 3 * 24 * 60 * 60 * 1000,
   },
   {
     id: "leaf-hashes",
     title: "Leaf hashes not matching checkpoint",
-    description: "One hash in the first leaf-hash tile is altered. The recomputed Merkle root differs from the checkpoint's, so none of the log's entries are shown.",
-    tile: (file, bytes) => (file.kind === "hashes" && file.level === 0 && file.index === 0 ? flipFirstByte(bytes) : bytes),
+    description:
+      "One hash in the first leaf-hash tile is altered. The recomputed Merkle root differs from the checkpoint's, so none of the log's entries are shown.",
+    tile: (file, bytes) =>
+      file.kind === "hashes" && file.level === 0 && file.index === 0 ? flipFirstByte(bytes) : bytes,
   },
   {
     id: "interior-tile",
     title: "Interior tile not matching leaf hashes",
-    description: "One hash in a level-1 interior tile is altered. The entries still verify against the checkpoint, but the log serves an inconsistent interior tile. Logs with fewer than 256 entries have no interior tiles.",
+    description:
+      "One hash in a level-1 interior tile is altered. The entries still verify against the checkpoint, but the log serves an inconsistent interior tile. Logs with fewer than 256 entries have no interior tiles.",
     tile: (file, bytes) => (file.kind === "hashes" && file.level === 1 ? flipFirstByte(bytes) : bytes),
   },
   {
@@ -138,35 +151,46 @@ export const FAULTS: Fault[] = [
   {
     id: "entry-swapped",
     title: "Served entries not matching leaf hashes",
-    description: "Two recent entries are altered as served, so they no longer match the leaf hashes the log committed to.",
+    description:
+      "Two recent entries are altered as served, so they no longer match the leaf hashes the log committed to.",
     entryStage: "served",
-    entry: (bytes) => editRecord(bytes, (spec) => { spec.debugAltered = true; }),
+    entry: (bytes) =>
+      editRecord(bytes, (spec) => {
+        spec.debugAltered = true;
+      }),
   },
   {
     id: "entry-signature",
     title: "Logged entries with invalid signatures",
     description: "Two recent entries are shown as if the log had recorded them with signatures that do not verify.",
     entryStage: "logged",
-    entry: (bytes) => editRecord(bytes, (spec) => {
-      spec.signature.content = b64Encode(flipLastByte(b64Decode(spec.signature.content)));
-    }),
+    entry: (bytes) =>
+      editRecord(bytes, (spec) => {
+        spec.signature.content = b64Encode(flipLastByte(b64Decode(spec.signature.content)));
+      }),
   },
   {
     id: "entry-content",
     title: "Logged entries with altered statements",
-    description: "Two recent entries are shown as if the log had recorded them with statements changed after signing: the recorded SHA-256 and the signature both fail.",
+    description:
+      "Two recent entries are shown as if the log had recorded them with statements changed after signing: the recorded SHA-256 and the signature both fail.",
     entryStage: "logged",
-    entry: (bytes) => editRecord(bytes, (spec) => {
-      const statement = utf8Decode(b64Decode(spec.data.content));
-      spec.data.content = b64Text(statement.replace(/"name":\s*"/, (m) => m + "altered-"));
-    }),
+    entry: (bytes) =>
+      editRecord(bytes, (spec) => {
+        const statement = utf8Decode(b64Decode(spec.data.content));
+        spec.data.content = b64Text(statement.replace(/"name":\s*"/, (m) => m + "altered-"));
+      }),
   },
   {
     id: "entry-key",
     title: "Logged entries with unreadable keys",
-    description: "Two recent entries are shown as if the log had recorded them with unreadable public keys. Their statements can still be read.",
+    description:
+      "Two recent entries are shown as if the log had recorded them with unreadable public keys. Their statements can still be read.",
     entryStage: "logged",
-    entry: (bytes) => editRecord(bytes, (spec) => { spec.signature.publicKey.content = b64Text("not a key"); }),
+    entry: (bytes) =>
+      editRecord(bytes, (spec) => {
+        spec.signature.publicKey.content = b64Text("not a key");
+      }),
   },
   {
     id: "entry-garbage",

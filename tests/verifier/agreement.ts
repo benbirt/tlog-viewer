@@ -30,11 +30,16 @@ before(async () => {
 async function both<T>(fn: string, ...args: unknown[]): Promise<T> {
   const [x, y] = [await go(fn, ...args), await tinygo(fn, ...args)];
   // Most replies are JSON; bytes are compared as hex.
-  const text = (v: unknown) => (typeof v === "string" ? v : JSON.stringify(v, (_k, b: unknown) => (b instanceof Uint8Array ? Buffer.from(b).toString("hex") : b)));
+  const text = (v: unknown) =>
+    typeof v === "string"
+      ? v
+      : JSON.stringify(v, (_k, b: unknown) => (b instanceof Uint8Array ? Buffer.from(b).toString("hex") : b));
   const [a, b] = [text(x), text(y)];
   if (a !== b) {
     const input = args.map((x) => (typeof x === "string" ? x : `<${String(x).slice(0, 40)}>`)).join(", ");
-    assert.fail(`${fn}: the builds disagree\n  go:     ${a.slice(0, 600)}\n  tinygo: ${b.slice(0, 600)}\n  input:  ${input.slice(0, 600)}`);
+    assert.fail(
+      `${fn}: the builds disagree\n  go:     ${a.slice(0, 600)}\n  tinygo: ${b.slice(0, 600)}\n  input:  ${input.slice(0, 600)}`,
+    );
   }
   return (typeof x === "string" ? JSON.parse(x) : x) as T;
 }
@@ -64,10 +69,14 @@ const AWKWARD = [" ", "\t", "\n", "\r", "\0", "+", "=", "#", "/", "A", "0", "9",
 function mutateText(r: () => number, text: string): string {
   const i = int(r, text.length + 1);
   switch (int(r, 4)) {
-    case 0: return text.slice(0, i) + pick(r, AWKWARD) + text.slice(i + 1);
-    case 1: return text.slice(0, i) + pick(r, AWKWARD) + text.slice(i);
-    case 2: return text.slice(0, i) + text.slice(i + 1);
-    default: return text.slice(0, i) + text.slice(i - 1, i) + text.slice(i);
+    case 0:
+      return text.slice(0, i) + pick(r, AWKWARD) + text.slice(i + 1);
+    case 1:
+      return text.slice(0, i) + pick(r, AWKWARD) + text.slice(i);
+    case 2:
+      return text.slice(0, i) + text.slice(i + 1);
+    default:
+      return text.slice(0, i) + text.slice(i - 1, i) + text.slice(i);
   }
 }
 
@@ -77,9 +86,15 @@ function mutateLines(r: () => number, text: string): string {
   const i = int(r, lines.length);
   const j = int(r, lines.length);
   switch (int(r, 5)) {
-    case 0: lines.splice(i, 1); break;
-    case 1: lines.splice(j, 0, lines[i]!); break;
-    case 2: [lines[i], lines[j]] = [lines[j]!, lines[i]!]; break;
+    case 0:
+      lines.splice(i, 1);
+      break;
+    case 1:
+      lines.splice(j, 0, lines[i]!);
+      break;
+    case 2:
+      [lines[i], lines[j]] = [lines[j]!, lines[i]!];
+      break;
     case 3: {
       const words = lines[i]!.split(" ");
       const others = lines[j]!.split(" ");
@@ -87,7 +102,9 @@ function mutateLines(r: () => number, text: string): string {
       lines[i] = words.join(" ");
       break;
     }
-    default: lines[i] = mutateText(r, lines[i]!); break;
+    default:
+      lines[i] = mutateText(r, lines[i]!);
+      break;
   }
   return lines.join("\n");
 }
@@ -95,7 +112,10 @@ function mutateLines(r: () => number, text: string): string {
 /** Replaces the base64 of one signature line with an edited copy of its bytes. */
 function editSignature(checkpoint: string, line: number, edit: (sig: Buffer) => Buffer | void): string {
   const split = checkpoint.lastIndexOf("\n\n");
-  const lines = checkpoint.slice(split + 2).split("\n").filter((l) => l !== "");
+  const lines = checkpoint
+    .slice(split + 2)
+    .split("\n")
+    .filter((l) => l !== "");
   const m = /^(— \S+) (\S+)$/.exec(lines[line]!)!;
   const bytes = Buffer.from(m[2]!, "base64");
   lines[line] = `${m[1]} ${(edit(bytes) ?? bytes).toString("base64")}`;
@@ -116,36 +136,95 @@ function handMadePolicies(): string[] {
   const other = lines.find((l) => l.startsWith("witness glasklar-g1-01-ed25519 "))!.split(" ")[2]!;
   const [name, id, key] = [vkey!.split("+")[0]!, vkey!.split("+")[1]!, vkey!.split("+").slice(2).join("+")];
   return [
-    "", "\n", "quorum none\n", "quorum none", "quorum\n", "quorum none none\n", "quorum none\nquorum none\n",
-    `${log}\nquorum none\n`, `${log}\n${log}\nquorum none\n`, `log\nquorum none\n`, `log ${logVkey} https://example.com extra\nquorum none\n`,
-    `log ${logVkey} https://example.com/log\nquorum none\n`, `log ${logVkey} not-a-url\nquorum none\n`,
-    `${w("a")}\nquorum a\n`, `${w("a")}\nquorum b\n`, `${w("a")}\n`, `quorum a\n${w("a")}\n`,
-    `${w("a")}\n${w("a", other)}\nquorum a\n`, `${w("a")}\n${w("b")}\nquorum a\n`,
-    `${w("a")}\n${w("b", other)}\ngroup g 2 a b\nquorum g\n`, `${w("a")}\n${w("b", other)}\ngroup g 3 a b\nquorum g\n`,
-    `${w("a")}\ngroup g 0 a\nquorum g\n`, `${w("a")}\ngroup g -1 a\nquorum g\n`, `${w("a")}\ngroup g 01 a\nquorum g\n`,
-    `${w("a")}\ngroup g 1.0 a\nquorum g\n`, `${w("a")}\ngroup g +1 a\nquorum g\n`, `${w("a")}\ngroup g 1 a a\nquorum g\n`,
-    `${w("a")}\ngroup g any a\nquorum g\n`, `${w("a")}\ngroup g all a\nquorum g\n`, `${w("a")}\ngroup g ANY a\nquorum g\n`,
-    `${w("a")}\ngroup g any\nquorum g\n`, `${w("a")}\ngroup g\nquorum g\n`, `${w("a")}\ngroup a any a\nquorum a\n`,
-    `${w("a")}\ngroup g any a\ngroup g any a\nquorum g\n`, `${w("a")}\ngroup g any a\ngroup h any a\nquorum h\n`,
-    `${w("a")}\n${w("b", other)}\ngroup g any a b\ngroup h all g b\nquorum h\n`, `${w("a")}\ngroup g 0000000000000000001 a\nquorum g\n`,
-    `${w("a", vkey, "https://example.com/%zz")}\nquorum a\n`, `${w("a", vkey, "/relative")}\nquorum a\n`, `${w("a", vkey, "http://[::1")}\nquorum a\n`, `${w("a")}\ngroup g any a\ngroup h any g\nquorum h\n`,
-    `${w("a")}\ngroup h any g\ngroup g any a\nquorum h\n`, `${w("a")}\ngroup g any g\nquorum g\n`,
-    `${w("none")}\nquorum none\n`, `${w("a")}\ngroup none any a\nquorum none\n`, `${w("any")}\ngroup all any any\nquorum all\n`,
-    `${w("quorum")}\ngroup group any quorum\nquorum group\n`, `${w("a")}\ngroup g 99999999999999999999 a\nquorum g\n`,
-    `${w("a", vkey, url!)}\nquorum a\n`, `${w("a", vkey, url!, "extra")}\nquorum a\n`, `witness a\nquorum a\n`, `witness\nquorum none\n`,
-    `  ${w("a")}\nquorum a\n`, `${w("a")}  \nquorum a\n`, `\t${w("a")}\t\nquorum\ta\n`, `${w("a").replaceAll(" ", "  ")}\nquorum  a\n`,
-    `${w("a")}\r\nquorum a\r\n`, `${w("a")}\nquorum a\n\n\n`, `\n\n${w("a")}\n\nquorum a`, `${w("a")}\nquorum a\n\0`,
-    `# comment\n${w("a")}\n  # indented\n\t#tab\n#\nquorum a\n`, `${w("a")} # trailing\nquorum a\n`, `${w("a")}\nquorum a # trailing\n`,
-    `${w("a")}\n#quorum b\nquorum a\n`, `Witness a ${vkey}\nquorum a\n`, `${w("a")}\nQUORUM a\n`, `frobnicate\nquorum none\n`,
-    `${w("a", `${name}+${id}+${key.slice(0, -4)}`)}\nquorum a\n`, `${w("a", `${name}+${id}+${key}AAAA`)}\nquorum a\n`,
-    `${w("a", `${name}+00000000+${key}`)}\nquorum a\n`, `${w("a", `${name}+${id.toUpperCase()}+${key}`)}\nquorum a\n`,
-    `${w("a", `${name}+${id.slice(1)}+${key}`)}\nquorum a\n`, `${w("a", `${name}+0${id}+${key}`)}\nquorum a\n`,
-    `${w("a", `other.example+${id}+${key}`)}\nquorum a\n`, `${w("a", `+${id}+${key}`)}\nquorum a\n`, `${w("a", `${name}++${key}`)}\nquorum a\n`,
-    `${w("a", `${name}+${id}`)}\nquorum a\n`, `${w("a", `${name}+${id}+`)}\nquorum a\n`, `${w("a", name)}\nquorum a\n`,
-    `${w("a", `${name}+${id}+${key.replace(/=*$/, "")}`)}\nquorum a\n`, `${w("a", `${name}+${id}+${key.replaceAll("+", "-").replaceAll("/", "_")}`)}\nquorum a\n`,
+    "",
+    "\n",
+    "quorum none\n",
+    "quorum none",
+    "quorum\n",
+    "quorum none none\n",
+    "quorum none\nquorum none\n",
+    `${log}\nquorum none\n`,
+    `${log}\n${log}\nquorum none\n`,
+    `log\nquorum none\n`,
+    `log ${logVkey} https://example.com extra\nquorum none\n`,
+    `log ${logVkey} https://example.com/log\nquorum none\n`,
+    `log ${logVkey} not-a-url\nquorum none\n`,
+    `${w("a")}\nquorum a\n`,
+    `${w("a")}\nquorum b\n`,
+    `${w("a")}\n`,
+    `quorum a\n${w("a")}\n`,
+    `${w("a")}\n${w("a", other)}\nquorum a\n`,
+    `${w("a")}\n${w("b")}\nquorum a\n`,
+    `${w("a")}\n${w("b", other)}\ngroup g 2 a b\nquorum g\n`,
+    `${w("a")}\n${w("b", other)}\ngroup g 3 a b\nquorum g\n`,
+    `${w("a")}\ngroup g 0 a\nquorum g\n`,
+    `${w("a")}\ngroup g -1 a\nquorum g\n`,
+    `${w("a")}\ngroup g 01 a\nquorum g\n`,
+    `${w("a")}\ngroup g 1.0 a\nquorum g\n`,
+    `${w("a")}\ngroup g +1 a\nquorum g\n`,
+    `${w("a")}\ngroup g 1 a a\nquorum g\n`,
+    `${w("a")}\ngroup g any a\nquorum g\n`,
+    `${w("a")}\ngroup g all a\nquorum g\n`,
+    `${w("a")}\ngroup g ANY a\nquorum g\n`,
+    `${w("a")}\ngroup g any\nquorum g\n`,
+    `${w("a")}\ngroup g\nquorum g\n`,
+    `${w("a")}\ngroup a any a\nquorum a\n`,
+    `${w("a")}\ngroup g any a\ngroup g any a\nquorum g\n`,
+    `${w("a")}\ngroup g any a\ngroup h any a\nquorum h\n`,
+    `${w("a")}\n${w("b", other)}\ngroup g any a b\ngroup h all g b\nquorum h\n`,
+    `${w("a")}\ngroup g 0000000000000000001 a\nquorum g\n`,
+    `${w("a", vkey, "https://example.com/%zz")}\nquorum a\n`,
+    `${w("a", vkey, "/relative")}\nquorum a\n`,
+    `${w("a", vkey, "http://[::1")}\nquorum a\n`,
+    `${w("a")}\ngroup g any a\ngroup h any g\nquorum h\n`,
+    `${w("a")}\ngroup h any g\ngroup g any a\nquorum h\n`,
+    `${w("a")}\ngroup g any g\nquorum g\n`,
+    `${w("none")}\nquorum none\n`,
+    `${w("a")}\ngroup none any a\nquorum none\n`,
+    `${w("any")}\ngroup all any any\nquorum all\n`,
+    `${w("quorum")}\ngroup group any quorum\nquorum group\n`,
+    `${w("a")}\ngroup g 99999999999999999999 a\nquorum g\n`,
+    `${w("a", vkey, url!)}\nquorum a\n`,
+    `${w("a", vkey, url!, "extra")}\nquorum a\n`,
+    `witness a\nquorum a\n`,
+    `witness\nquorum none\n`,
+    `  ${w("a")}\nquorum a\n`,
+    `${w("a")}  \nquorum a\n`,
+    `\t${w("a")}\t\nquorum\ta\n`,
+    `${w("a").replaceAll(" ", "  ")}\nquorum  a\n`,
+    `${w("a")}\r\nquorum a\r\n`,
+    `${w("a")}\nquorum a\n\n\n`,
+    `\n\n${w("a")}\n\nquorum a`,
+    `${w("a")}\nquorum a\n\0`,
+    `# comment\n${w("a")}\n  # indented\n\t#tab\n#\nquorum a\n`,
+    `${w("a")} # trailing\nquorum a\n`,
+    `${w("a")}\nquorum a # trailing\n`,
+    `${w("a")}\n#quorum b\nquorum a\n`,
+    `Witness a ${vkey}\nquorum a\n`,
+    `${w("a")}\nQUORUM a\n`,
+    `frobnicate\nquorum none\n`,
+    `${w("a", `${name}+${id}+${key.slice(0, -4)}`)}\nquorum a\n`,
+    `${w("a", `${name}+${id}+${key}AAAA`)}\nquorum a\n`,
+    `${w("a", `${name}+00000000+${key}`)}\nquorum a\n`,
+    `${w("a", `${name}+${id.toUpperCase()}+${key}`)}\nquorum a\n`,
+    `${w("a", `${name}+${id.slice(1)}+${key}`)}\nquorum a\n`,
+    `${w("a", `${name}+0${id}+${key}`)}\nquorum a\n`,
+    `${w("a", `other.example+${id}+${key}`)}\nquorum a\n`,
+    `${w("a", `+${id}+${key}`)}\nquorum a\n`,
+    `${w("a", `${name}++${key}`)}\nquorum a\n`,
+    `${w("a", `${name}+${id}`)}\nquorum a\n`,
+    `${w("a", `${name}+${id}+`)}\nquorum a\n`,
+    `${w("a", name)}\nquorum a\n`,
+    `${w("a", `${name}+${id}+${key.replace(/=*$/, "")}`)}\nquorum a\n`,
+    `${w("a", `${name}+${id}+${key.replaceAll("+", "-").replaceAll("/", "_")}`)}\nquorum a\n`,
     // A log's key offered as a witness, and a witness's as a log.
-    `${w("a", logVkey)}\nquorum a\n`, `log ${vkey}\nquorum none\n`, `log ${vkey}\n${w("a")}\nquorum a\n`,
-    `${w("é")}\nquorum é\n`, `${w("a b")}\nquorum a b\n`, `${w("a+b")}\nquorum a+b\n`, `${w("#a")}\nquorum #a\n`,
+    `${w("a", logVkey)}\nquorum a\n`,
+    `log ${vkey}\nquorum none\n`,
+    `log ${vkey}\n${w("a")}\nquorum a\n`,
+    `${w("é")}\nquorum é\n`,
+    `${w("a b")}\nquorum a b\n`,
+    `${w("a+b")}\nquorum a+b\n`,
+    `${w("#a")}\nquorum #a\n`,
   ];
 }
 
@@ -154,7 +233,11 @@ test("the builds read policies alike", async () => {
   const cases = [POLICY, POLICY_TEXT, ...handMadePolicies()];
   const r = random(1);
   // A shorter policy keeps mutations from landing mostly in key material.
-  const small = POLICY.split("\n").filter((l) => !l.startsWith("#") && l !== "").filter((l, i) => i < 3 || !l.startsWith("log ")).join("\n") + "\n";
+  const small =
+    POLICY.split("\n")
+      .filter((l) => !l.startsWith("#") && l !== "")
+      .filter((l, i) => i < 3 || !l.startsWith("log "))
+      .join("\n") + "\n";
   for (let i = 0; i < 1500; i++) {
     let text = pick(r, [POLICY, small, small]);
     for (let n = 1 + int(r, 3); n > 0; n--) text = r() < 0.6 ? mutateLines(r, text) : mutateText(r, text);
@@ -171,7 +254,10 @@ test("the builds read policies alike", async () => {
 // ---------------------------------------------------------------------------
 // Checkpoints
 
-interface Verdict { malformed?: string; ok: boolean }
+interface Verdict {
+  malformed?: string;
+  ok: boolean;
+}
 
 /** Judges checkpoints under policies with both builds, and counts the verdicts. */
 class Verdicts {
@@ -194,24 +280,36 @@ class Verdicts {
 test("the builds judge a real checkpoint, altered every which way, alike", async () => {
   const split = CHECKPOINT.lastIndexOf("\n\n");
   const body = CHECKPOINT.slice(0, split + 1);
-  const sigs = CHECKPOINT.slice(split + 2).split("\n").filter((l) => l !== "");
+  const sigs = CHECKPOINT.slice(split + 2)
+    .split("\n")
+    .filter((l) => l !== "");
   const withSigs = (lines: string[], text = body) => text + "\n" + lines.map((l) => l + "\n").join("");
   const [origin, size, hash] = body.split("\n") as [string, string, string];
   const withBody = (text: string) => withSigs(sigs, text);
 
   const cases: string[] = [CHECKPOINT];
   for (let i = 0; i < sigs.length; i++) {
-    cases.push(withSigs(sigs.filter((_, j) => j !== i)));                       // one signature removed
-    cases.push(withSigs([...sigs, sigs[i]!]));                                   // repeated at the end
-    cases.push(withSigs([...sigs.slice(0, i), sigs[i]!, ...sigs.slice(i)]));      // repeated in place
-    cases.push(withSigs([sigs[i]!]));                                            // alone
-    for (const at of [4, 5, 11, 12, 13, -1]) {                                   // key ID, timestamp, signature
-      cases.push(editSignature(CHECKPOINT, i, (b) => { const k = at < 0 ? b.length + at : Math.min(at, b.length - 1); b[k]! ^= 1; }));
+    cases.push(withSigs(sigs.filter((_, j) => j !== i))); // one signature removed
+    cases.push(withSigs([...sigs, sigs[i]!])); // repeated at the end
+    cases.push(withSigs([...sigs.slice(0, i), sigs[i]!, ...sigs.slice(i)])); // repeated in place
+    cases.push(withSigs([sigs[i]!])); // alone
+    for (const at of [4, 5, 11, 12, 13, -1]) {
+      // key ID, timestamp, signature
+      cases.push(
+        editSignature(CHECKPOINT, i, (b) => {
+          const k = at < 0 ? b.length + at : Math.min(at, b.length - 1);
+          b[k]! ^= 1;
+        }),
+      );
     }
-    cases.push(editSignature(CHECKPOINT, i, (b) => { b[0]! ^= 1; }));             // a different key ID
+    cases.push(
+      editSignature(CHECKPOINT, i, (b) => {
+        b[0]! ^= 1;
+      }),
+    ); // a different key ID
     cases.push(editSignature(CHECKPOINT, i, (b) => b.subarray(0, b.length - 1))); // truncated
     cases.push(editSignature(CHECKPOINT, i, (b) => Buffer.concat([b, Buffer.from([0])])));
-    cases.push(editSignature(CHECKPOINT, i, (b) => b.subarray(0, 4)));            // a key ID and nothing else
+    cases.push(editSignature(CHECKPOINT, i, (b) => b.subarray(0, 4))); // a key ID and nothing else
     cases.push(withSigs(sigs.map((l, j) => (j === i ? l.replace(/^— (\S+)/, "— $1x") : l))));
     cases.push(withSigs(sigs.map((l, j) => (j === i ? l.replace("— ", "- ") : l))));
     cases.push(withSigs(sigs.map((l, j) => (j === i ? l + " " : l))));
@@ -220,22 +318,56 @@ test("the builds judge a real checkpoint, altered every which way, alike", async
   cases.push(withSigs([...sigs].reverse()), withSigs([]), withSigs(sigs.slice(0, 2)), withSigs(sigs.slice(2)));
   // The body.
   for (const text of [
-    `${origin}\n${Number(size) + 1}\n${hash}\n`, `${origin}\n0${size}\n${hash}\n`, `${origin}\n\n${hash}\n`, `${origin}\n-1\n${hash}\n`,
-    `${origin}\n${size} \n${hash}\n`, `${origin}\n+${size}\n${hash}\n`, `${origin}\n${size}.0\n${hash}\n`, `${origin}\n99999999999999999999\n${hash}\n`,
-    `${origin}x\n${size}\n${hash}\n`, `\n${size}\n${hash}\n`, `paic.google.com/log/1\n${size}\n${hash}\n`, ` ${origin}\n${size}\n${hash}\n`,
-    `${origin}\n${size}\n${hash.replace("Uc=", "Ud=")}\n`, `${origin}\n${size}\n${hash.replace("=", "")}\n`, `${origin}\n${size}\n${hash}=\n`,
-    `${origin}\n${size}\n${hash.slice(4)}\n`, `${origin}\n${size}\nAAAA${hash}\n`, `${origin}\n${size}\n${hash.replaceAll("+", "-").replaceAll("/", "_")}\n`,
-    `${origin}\n${size}\n\n`, `${origin}\n${size}\n`, `${origin}\n`, "", "\n",
-    `${origin}\n${size}\n${hash}\nextension\n`, `${origin}\n${size}\n${hash}\nextension one\nextension two\n`, `${origin}\n${size}\n${hash}\n\nextension\n`,
-    `${origin}\n${size}\n${hash}\nextension\n\n`, `${origin}\n${size}\n${hash}\n \n`, `${origin}\n${size}\n${hash}\n\textension\n`,
-    `${origin}\r\n${size}\r\n${hash}\r\n`, `${origin}\n${size}\n${hash}`, `${origin}\n${size}\n${hash}\n\0\n`,
-  ]) cases.push(withBody(text));
-  cases.push(CHECKPOINT.replaceAll("\n", "\r\n"), CHECKPOINT.slice(0, -1), CHECKPOINT + "\n", CHECKPOINT + " ", "\n" + CHECKPOINT,
-    body + sigs.map((l) => l + "\n").join(""), body + "\n\n" + sigs.map((l) => l + "\n").join(""), body + "\n" + sigs.join("\n\n") + "\n",
+    `${origin}\n${Number(size) + 1}\n${hash}\n`,
+    `${origin}\n0${size}\n${hash}\n`,
+    `${origin}\n\n${hash}\n`,
+    `${origin}\n-1\n${hash}\n`,
+    `${origin}\n${size} \n${hash}\n`,
+    `${origin}\n+${size}\n${hash}\n`,
+    `${origin}\n${size}.0\n${hash}\n`,
+    `${origin}\n99999999999999999999\n${hash}\n`,
+    `${origin}x\n${size}\n${hash}\n`,
+    `\n${size}\n${hash}\n`,
+    `paic.google.com/log/1\n${size}\n${hash}\n`,
+    ` ${origin}\n${size}\n${hash}\n`,
+    `${origin}\n${size}\n${hash.replace("Uc=", "Ud=")}\n`,
+    `${origin}\n${size}\n${hash.replace("=", "")}\n`,
+    `${origin}\n${size}\n${hash}=\n`,
+    `${origin}\n${size}\n${hash.slice(4)}\n`,
+    `${origin}\n${size}\nAAAA${hash}\n`,
+    `${origin}\n${size}\n${hash.replaceAll("+", "-").replaceAll("/", "_")}\n`,
+    `${origin}\n${size}\n\n`,
+    `${origin}\n${size}\n`,
+    `${origin}\n`,
+    "",
+    "\n",
+    `${origin}\n${size}\n${hash}\nextension\n`,
+    `${origin}\n${size}\n${hash}\nextension one\nextension two\n`,
+    `${origin}\n${size}\n${hash}\n\nextension\n`,
+    `${origin}\n${size}\n${hash}\nextension\n\n`,
+    `${origin}\n${size}\n${hash}\n \n`,
+    `${origin}\n${size}\n${hash}\n\textension\n`,
+    `${origin}\r\n${size}\r\n${hash}\r\n`,
+    `${origin}\n${size}\n${hash}`,
+    `${origin}\n${size}\n${hash}\n\0\n`,
+  ])
+    cases.push(withBody(text));
+  cases.push(
+    CHECKPOINT.replaceAll("\n", "\r\n"),
+    CHECKPOINT.slice(0, -1),
+    CHECKPOINT + "\n",
+    CHECKPOINT + " ",
+    "\n" + CHECKPOINT,
+    body + sigs.map((l) => l + "\n").join(""),
+    body + "\n\n" + sigs.map((l) => l + "\n").join(""),
+    body + "\n" + sigs.join("\n\n") + "\n",
     CHECKPOINT + "— example.com/witness " + Buffer.alloc(76, 7).toString("base64") + "\n",
     CHECKPOINT + "— a+b " + Buffer.alloc(76, 7).toString("base64") + "\n",
-    CHECKPOINT + "— example.com/witness AAAA\n", CHECKPOINT + "— example.com/witness \n", CHECKPOINT + "— example.com/witness !!!!\n",
-    CHECKPOINT + "trailing\n");
+    CHECKPOINT + "— example.com/witness AAAA\n",
+    CHECKPOINT + "— example.com/witness \n",
+    CHECKPOINT + "— example.com/witness !!!!\n",
+    CHECKPOINT + "trailing\n",
+  );
 
   const r = random(2);
   for (let i = 0; i < 700; i++) {
@@ -267,7 +399,11 @@ test("the builds judge checkpoints signed for the purpose alike", async () => {
     await NoteKey.generate("four.witness.example", ML_DSA_44),
   ];
   const stranger = await NoteKey.generate("stranger.example", ED25519_COSIGNATURE);
-  const head = [...[...logs, otherLog].map((k) => `log ${k.vkey}`), ...witnesses.map((w, i) => `witness w${i + 1} ${w.vkey}`)].join("\n") + "\n";
+  const head =
+    [
+      ...[...logs, otherLog].map((k) => `log ${k.vkey}`),
+      ...witnesses.map((w, i) => `witness w${i + 1} ${w.vkey}`),
+    ].join("\n") + "\n";
   const policies = [
     head + "group g 2 w1 w2 w3\nquorum g\n",
     head + "group g all w1 w2 w3 w4\nquorum g\n",
@@ -283,7 +419,8 @@ test("the builds judge checkpoints signed for the purpose alike", async () => {
   const empty = await sha256(new Uint8Array(0));
   /** A checkpoint with the given first lines, signed by the given keys at the given times. */
   async function signed(
-    signers: NoteKey[], options: { origin?: string; size?: number; root?: Bytes; extensions?: string[]; time?: number } = {},
+    signers: NoteKey[],
+    options: { origin?: string; size?: number; root?: Bytes; extensions?: string[]; time?: number } = {},
   ): Promise<string> {
     const cp = { origin: options.origin ?? origin, size: options.size ?? 42, root: options.root ?? root };
     const text = `${cp.origin}\n${cp.size}\n${b64Encode(cp.root)}\n${(options.extensions ?? []).map((l) => l + "\n").join("")}`;
@@ -333,7 +470,9 @@ test("the builds judge checkpoints signed for the purpose alike", async () => {
   for (const policy of policies) {
     for (const raw of cases) await verdicts.judge(policy, raw, origin);
   }
-  console.log(`checkpoints signed for the purpose: ${cases.length} under ${policies.length} policies judged alike (${verdicts})`);
+  console.log(
+    `checkpoints signed for the purpose: ${cases.length} under ${policies.length} policies judged alike (${verdicts})`,
+  );
   assert.ok(verdicts.ok > 100 && verdicts.refused > 100 && verdicts.malformed > 100);
 });
 
@@ -348,7 +487,25 @@ test("the builds hash trees, and write and check proofs, alike", async () => {
   const policy = `log ${key.vkey}\nquorum none\n`;
   const hexOf = (b: Bytes) => Buffer.from(b).toString("hex");
 
-  const sizes = [0, ...Array.from({ length: 34 }, (_, i) => i + 1), 63, 64, 65, 100, 127, 128, 129, 255, 256, 257, 300, 511, 512, 513, 700];
+  const sizes = [
+    0,
+    ...Array.from({ length: 34 }, (_, i) => i + 1),
+    63,
+    64,
+    65,
+    100,
+    127,
+    128,
+    129,
+    255,
+    256,
+    257,
+    300,
+    511,
+    512,
+    513,
+    700,
+  ];
   let proofs = 0;
   let last = "";
   let lastLeaf = "";
@@ -357,11 +514,20 @@ test("the builds hash trees, and write and check proofs, alike", async () => {
     assert.equal(tree.error, undefined);
     if (size === 0) continue;
     const text = `test.example/log\n${size}\n${tree.root}\n`;
-    const checkpoint = text + "\n" + await key.sign(text, 0);
+    const checkpoint = text + "\n" + (await key.sign(text, 0));
     for (const index of new Set([0, size - 1, Math.floor(size / 2), int(r, size), int(r, size)])) {
-      const { proof } = await both<{ proof: string }>("tlogProve", leaves.subarray(0, size * 32), size, index, checkpoint);
+      const { proof } = await both<{ proof: string }>(
+        "tlogProve",
+        leaves.subarray(0, size * 32),
+        size,
+        index,
+        checkpoint,
+      );
       const check = (leaf: number, text = proof) =>
-        both<{ ok: boolean; error?: string }>("tlogCheckProof", JSON.stringify({ policy, proof: text, leafHash: hexOf(leaves.subarray(leaf * 32, leaf * 32 + 32)) }));
+        both<{ ok: boolean; error?: string }>(
+          "tlogCheckProof",
+          JSON.stringify({ policy, proof: text, leafHash: hexOf(leaves.subarray(leaf * 32, leaf * 32 + 32)) }),
+        );
       // A proof proves its own leaf and no other.
       assert.deepEqual(await check(index), { ok: true, index, origin: "test.example/log", size });
       if (size > 1) assert.equal((await check((index + 1) % size)).ok, false);
@@ -377,17 +543,30 @@ test("the builds hash trees, and write and check proofs, alike", async () => {
 
   // Proofs that are not quite proofs.
   const leaf = lastLeaf;
-  assert.equal((await both<{ ok: boolean }>("tlogCheckProof", JSON.stringify({ policy, proof: last, leafHash: leaf }))).ok, true);
+  assert.equal(
+    (await both<{ ok: boolean }>("tlogCheckProof", JSON.stringify({ policy, proof: last, leafHash: leaf }))).ok,
+    true,
+  );
   let refused = 0;
   for (let i = 0; i < 1500; i++) {
     const text = r() < 0.5 ? mutateLines(r, last) : mutateText(r, last);
-    if (!(await both<{ ok: boolean }>("tlogCheckProof", JSON.stringify({ policy, proof: text, leafHash: leaf }))).ok) refused++;
+    if (!(await both<{ ok: boolean }>("tlogCheckProof", JSON.stringify({ policy, proof: text, leafHash: leaf }))).ok)
+      refused++;
   }
-  for (const text of [last.replace(/index \d+/, "extra AAAA\n$&"), last.replace(/index /, "index 0"), last.replace(/index \d+/, "index -1"),
-    last.replace(/index \d+/, "index 18446744073709551616"), last.replace("@v1", "@v2"), last.replace(/\n\n/, "\n"), ""]) {
+  for (const text of [
+    last.replace(/index \d+/, "extra AAAA\n$&"),
+    last.replace(/index /, "index 0"),
+    last.replace(/index \d+/, "index -1"),
+    last.replace(/index \d+/, "index 18446744073709551616"),
+    last.replace("@v1", "@v2"),
+    last.replace(/\n\n/, "\n"),
+    "",
+  ]) {
     await both("tlogCheckProof", JSON.stringify({ policy, proof: text, leafHash: leaf }));
   }
-  console.log(`trees and proofs: ${sizes.length} trees and ${proofs} proofs alike; ${refused} of 1500 altered proofs refused alike`);
+  console.log(
+    `trees and proofs: ${sizes.length} trees and ${proofs} proofs alike; ${refused} of 1500 altered proofs refused alike`,
+  );
   assert.ok(refused > 1000 && refused < 1500);
 });
 
@@ -397,8 +576,20 @@ test("the builds hash trees, and write and check proofs, alike", async () => {
 test("the builds lay out logs, split bundles and hash leaves alike", async () => {
   const r = random(7);
   let tiles = 0;
-  for (const [from, size] of [[0, 0], [0, 1], [0, 255], [0, 256], [0, 257], [0, 70000], [600, 700], [512, 1030], [700, 700], [700, 600],
-    [1234067 * 256, 1234067 * 256 + 146], [2 ** 40, 2 ** 40 + 1000]] as const) {
+  for (const [from, size] of [
+    [0, 0],
+    [0, 1],
+    [0, 255],
+    [0, 256],
+    [0, 257],
+    [0, 70000],
+    [600, 700],
+    [512, 1030],
+    [700, 700],
+    [700, 600],
+    [1234067 * 256, 1234067 * 256 + 146],
+    [2 ** 40, 2 ** 40 + 1000],
+  ] as const) {
     tiles += (await both<{ tiles: unknown[] }>("tlogLayout", JSON.stringify({ from, size }))).tiles.length;
   }
   const bundle = new Uint8Array(testdata("entries-first7.bin"));

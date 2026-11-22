@@ -19,7 +19,10 @@ createServer(async (req, res) => {
     const rel = relative(root, file);
     if (rel.startsWith("..") || isAbsolute(rel)) throw new Error("outside root");
     const body = await readFile(file);
-    res.writeHead(200, { "content-type": types[extname(file)] ?? "application/octet-stream", "cache-control": "no-store" });
+    res.writeHead(200, {
+      "content-type": types[extname(file)] ?? "application/octet-stream",
+      "cache-control": "no-store",
+    });
     res.end(body);
   } catch {
     res.writeHead(404).end("not found\n");

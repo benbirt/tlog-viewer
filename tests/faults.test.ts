@@ -60,7 +60,8 @@ test("checkpoint and tile faults are applied by the log client", async () => {
     "https://log.example/tile/0/000": tile0,
     "https://log.example/tile/entries/000.p/7": bundle,
   };
-  const inner = async (url: string) => (served[url] !== undefined ? new Response(served[url]) : new Response("no", { status: 404 }));
+  const inner = async (url: string) =>
+    served[url] !== undefined ? new Response(served[url]) : new Response("no", { status: 404 });
   const client = (id: string) => new LogClient("https://log.example/", inner, undefined, fault(id));
 
   const tile = { index: 0, width: 256, first: 0, path: "tile/0/000", entries: "tile/entries/000.p/7" };

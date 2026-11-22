@@ -9,7 +9,9 @@ const [bundlePath] = process.argv.slice(2);
 if (!bundlePath) throw new Error("usage: gen_licenses <bundle.js>");
 
 const packages = new Map<string, string>();
-for (const m of readFileSync(bundlePath, "utf8").matchAll(/^\/\/ (node_modules\/\.aspect_rules_js\/[^/]+\/node_modules\/((?:@[^/]+\/)?[^/]+))\//gm)) {
+for (const m of readFileSync(bundlePath, "utf8").matchAll(
+  /^\/\/ (node_modules\/\.aspect_rules_js\/[^/]+\/node_modules\/((?:@[^/]+\/)?[^/]+))\//gm,
+)) {
   packages.set(m[2]!, m[1]!);
 }
 if (packages.size === 0) throw new Error("found no third-party packages in the bundle; has its format changed?");

@@ -66,6 +66,7 @@ tinygo_wasm_exec(name = "tinygo_wasm_exec")
 wasm_notices(
     name = "notices",
     out = "NOTICE.txt",
+    binary = ":verifier_lib",
     header = """verifier.wasm is built from verifier/main.go in
 https://github.com/benbirt/tlog-viewer (MIT) by TinyGo {tinygo}. It contains
 code from the projects below, at the versions pinned in go.mod and
@@ -74,7 +75,6 @@ that follow.
 
 tinygo_wasm_exec.js is from TinyGo, adapted there from the Go project's
 wasm_exec.js, under the licences of those two projects.""",
-    binary = ":verifier_lib",
     module_licenses = glob(["licenses/*.txt"]),
     modules = {
         "com_github_transparency_dev_formats": "github.com/transparency-dev/formats",
@@ -83,7 +83,7 @@ wasm_exec.js, under the licences of those two projects.""",
         "org_golang_x_crypto": "golang.org/x/crypto",
         "io_filippo_mldsa": "filippo.io/mldsa",
     },
-    licenses = {
+    other_licenses = {
         "licenses/go.txt": "The Go standard library",
         "licenses/tinygo.txt": "TinyGo: compiler and runtime",
         "licenses/wasi-libc.txt": "wasi-libc (C library linked by TinyGo)",

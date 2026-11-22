@@ -49,7 +49,7 @@ def _wasm_notices_impl(ctx):
         if module + ".txt" not in by_name:
             fail("no licence file %s.txt among module_licenses" % module)
         parts.append((title, by_name[module + ".txt"]))
-    for target, title in ctx.attr.licenses.items():
+    for target, title in ctx.attr.other_licenses.items():
         files = target.files.to_list()
         if len(files) != 1:
             fail("%s: expected one licence file, found %d" % (target.label, len(files)))
@@ -97,7 +97,7 @@ The build fails if the Go modules listed are not exactly those the module is bui
         "binary": attr.label(mandatory = True, aspects = [_go_modules_aspect], doc = "The Go library compiled into the module."),
         "modules": attr.string_dict(doc = "Go module, by the name of its repository, to the title to print above its licence."),
         "module_licenses": attr.label_list(allow_files = [".txt"], doc = "<module>.txt for each of modules."),
-        "licenses": attr.label_keyed_string_dict(allow_files = True, doc = "Any other licence file, to its title."),
+        "other_licenses": attr.label_keyed_string_dict(allow_files = True, doc = "Any other licence file, to its title."),
         "toolchain_licenses": attr.string_dict(doc = "Path of a licence file under the TinyGo toolchain, to its title."),
     },
     toolchains = ["@rules_tinygo//tinygo:toolchain_type"],

@@ -1,0 +1,22 @@
+load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
+load("@bazel_style//:defs.bzl", "style")
+
+# The Node tools that build and serve the site (run from the root package)
+# and the WebAssembly loader the tests share.
+ts_project(
+    name = "tools",
+    srcs = glob(["*.ts"]),
+    declaration = True,
+    tsconfig = "//:tsconfig_node",
+    visibility = ["//:__pkg__"],
+    deps = [
+        "//:node_modules/@types/node",
+        "//:web",
+    ],
+)
+
+# bazel run //tools:format formats every git-tracked file, with the formatters
+# and settings of benbirt/bazel-style; //tools:format.check only checks, and
+# //tools:lint lints the Starlark. Exclude a file with the rules-lint-ignored
+# attribute in .gitattributes.
+style()

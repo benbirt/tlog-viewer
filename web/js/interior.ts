@@ -20,11 +20,13 @@ export interface InteriorTileResult {
  */
 export async function verifyInteriorTiles(client: LogClient, expected: Tile[]): Promise<InteriorTileResult> {
   const result: InteriorTileResult = { checked: 0, mismatched: [] };
-  await Promise.all(expected.map(async (t) => {
-    const served = await client.hashTile(t);
-    if (!bytesEqual(served, t.data)) result.mismatched.push(t.path);
-    result.checked++;
-  }));
+  await Promise.all(
+    expected.map(async (t) => {
+      const served = await client.hashTile(t);
+      if (!bytesEqual(served, t.data)) result.mismatched.push(t.path);
+      result.checked++;
+    }),
+  );
   result.mismatched.sort();
   return result;
 }

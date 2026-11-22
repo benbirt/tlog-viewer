@@ -156,10 +156,15 @@ export function summariseStatement(statement: unknown): Summary {
  */
 export async function decodeEntry(bytes: Bytes): Promise<DecodedEntry> {
   const out: DecodedEntry = {
-    recordText: null, statement: null, summary: null, statementText: null,
-    keyPem: null, keyFingerprint: null,
+    recordText: null,
+    statement: null,
+    summary: null,
+    statementText: null,
+    keyPem: null,
+    keyFingerprint: null,
     checks: { contentHash: null, signature: null },
-    error: null, keyError: null,
+    error: null,
+    keyError: null,
   };
   const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 

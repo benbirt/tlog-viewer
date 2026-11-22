@@ -15,19 +15,28 @@ export function claimDocumentUrl(type: string): string | null {
 export function titleOf(markdown: string): string | null {
   const line = markdown.split("\n").find((l) => /^# \S/.test(l));
   if (!line) return null;
-  const title = line.slice(2).trim().replace(/\s+#+$/, "");
+  const title = line
+    .slice(2)
+    .trim()
+    .replace(/\s+#+$/, "");
   return title.length > 100 ? title.slice(0, 99) + "…" : title;
 }
 
 const cache = new Map<string, Promise<string | null>>();
 
 /** Resolves to a claim's title, or null if it has no document to read one from. Never rejects. */
-export function claimTitle(type: string, fetchFn: (url: string) => Promise<Response> = (url) => fetch(url)): Promise<string | null> {
+export function claimTitle(
+  type: string,
+  fetchFn: (url: string) => Promise<Response> = (url) => fetch(url),
+): Promise<string | null> {
   const url = claimDocumentUrl(type);
   if (!url) return Promise.resolve(null);
   let title = cache.get(url);
   if (!title) {
-    title = fetchFn(url).then((r) => (r.ok ? r.text() : null)).then((t) => (t === null ? null : titleOf(t))).catch(() => null);
+    title = fetchFn(url)
+      .then((r) => (r.ok ? r.text() : null))
+      .then((t) => (t === null ? null : titleOf(t)))
+      .catch(() => null);
     cache.set(url, title);
   }
   return title;

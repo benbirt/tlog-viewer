@@ -17,6 +17,7 @@ ts_config(
 ts_config(
     name = "tsconfig_node",
     src = "tsconfig.node.json",
+    visibility = ["//tools:__pkg__"],
     deps = [":tsconfig"],
 )
 
@@ -27,6 +28,7 @@ ts_project(
     srcs = glob(["web/js/*.ts"]),
     declaration = True,
     tsconfig = ":tsconfig",
+    visibility = ["//tools:__pkg__"],
     deps = [
         ":node_modules/@noble/curves",
         ":node_modules/jose",
@@ -39,7 +41,6 @@ ts_project(
         "tests/*.ts",
         "tests/e2e/*.ts",
         "tests/verifier/*.ts",
-        "tools/*.ts",
     ]),
     declaration = True,
     tsconfig = ":tsconfig_node",
@@ -47,6 +48,7 @@ ts_project(
         ":node_modules/@types/node",
         ":node_modules/playwright-core",
         ":web",
+        "//tools",
     ],
 )
 
@@ -54,6 +56,7 @@ NODE_RUNTIME = [
     "package.json",
     ":node",
     ":web",
+    "//tools",
 ]
 
 # The verifier policy for the production PAIC logs, from google-tlog-witness.
@@ -66,7 +69,7 @@ copy_file(
 js_binary(
     name = "gen_policy",
     data = NODE_RUNTIME,
-    entry_point = "tools/gen_policy.js",
+    entry_point = "//tools:gen_policy.js",
 )
 
 # Bakes the policy into a JS module, failing the build if the verifier the
@@ -92,7 +95,7 @@ js_run_binary(
 js_binary(
     name = "gen_build_info",
     data = NODE_RUNTIME,
-    entry_point = "tools/gen_build_info.js",
+    entry_point = "//tools:gen_build_info.js",
 )
 
 # Says which commit the site was built from, in builds made with
@@ -128,7 +131,7 @@ js_binary(
         ":node_modules/@noble/curves",
         ":node_modules/jose",
     ],
-    entry_point = "tools/gen_licenses.js",
+    entry_point = "//tools:gen_licenses.js",
 )
 
 # The licences of the third-party code in the bundle, served beside it.
@@ -173,7 +176,7 @@ copy_to_directory(
 js_binary(
     name = "serve",
     data = NODE_RUNTIME + [":site"],
-    entry_point = "tools/serve.js",
+    entry_point = "//tools:serve.js",
 )
 
 [

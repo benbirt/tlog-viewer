@@ -45,14 +45,19 @@ async function ask<T>(fn: string, request: unknown, time?: number): Promise<T> {
   } finally {
     globalThis.Date = RealDate;
   }
-  const reply = JSON.parse(await pending as string) as T & { error?: string };
+  const reply = JSON.parse((await pending) as string) as T & { error?: string };
   if (reply.error !== undefined) throw new Error(`${fn}: ${reply.error}`);
   return reply;
 }
 
 /** A note signing key of one of the three kinds the viewer verifies. */
 export class NoteKey {
-  private constructor(readonly name: string, readonly kind: KeyKind, readonly vkey: string, private readonly skey: string) {}
+  private constructor(
+    readonly name: string,
+    readonly kind: KeyKind,
+    readonly vkey: string,
+    private readonly skey: string,
+  ) {}
 
   static async generate(name: string, kind: KeyKind): Promise<NoteKey> {
     const { skey, vkey } = await ask<{ skey: string; vkey: string }>("signerKey", { name, kind });
@@ -69,7 +74,10 @@ const bytes = (b: ArrayBuffer | Uint8Array): Bytes => new Uint8Array(b as ArrayB
 
 /** An endorser: an ECDSA P-256 key that signs statements. */
 class Endorser {
-  private constructor(private readonly key: CryptoKey, readonly pemB64: string) {}
+  private constructor(
+    private readonly key: CryptoKey,
+    readonly pemB64: string,
+  ) {}
 
   static async generate(): Promise<Endorser> {
     const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
@@ -111,8 +119,10 @@ export class TestLog {
   private leafHashes: Bytes = new Uint8Array(0);
 
   constructor(
-    readonly origin: string, private readonly logKeys: NoteKey[],
-    private readonly witnesses: NoteKey[], private readonly endorsers: Endorser[],
+    readonly origin: string,
+    private readonly logKeys: NoteKey[],
+    private readonly witnesses: NoteKey[],
+    private readonly endorsers: Endorser[],
     /** Lays out and hashes the tree: the page's own verifier, so the fixture is right only if it is. */
     private readonly verifier: Verifier,
   ) {}
@@ -134,20 +144,35 @@ export class TestLog {
       const issued = new Date(short ? now - 30 * 86400_000 : now - (n - k) * 60_000);
       const until = new Date(issued.getTime() + (short ? 7 : 365) * 86400_000);
       const publisher = PUBLISHERS[i % 5 === 0 ? 1 : 0]!;
-      const statement = JSON.stringify({
-        _type: "https://in-toto.io/Statement/v1",
-        predicateType: "https://project-oak.github.io/oak/tr/endorsement/v1",
-        subject: [{ name: `mpm_${(i * 2654435761 >>> 0).toString(16).padStart(8, "0")}`, digest: { sha256: hex(await sha256(utf8Encode(`artifact ${i}`))) } }],
-        predicate: {
-          issuedOn: issued.toISOString(),
-          validity: { notBefore: issued.toISOString(), notAfter: until.toISOString() },
-          claims: [
-            { type: "https://github.com/test-org/claims/blob/main/docs/claims/publisher.md", annotations: { publisher_id: publisher } },
-            { type: "https://github.com/test-org/claims/blob/main/docs/claims/workload.md", annotations: { workload_id: `workload-${i % 4}`, version: `1.${i}` } },
-            { type: "https://github.com/test-org/claims/blob/main/docs/claim/31543.md" },
+      const statement = JSON.stringify(
+        {
+          _type: "https://in-toto.io/Statement/v1",
+          predicateType: "https://project-oak.github.io/oak/tr/endorsement/v1",
+          subject: [
+            {
+              name: `mpm_${((i * 2654435761) >>> 0).toString(16).padStart(8, "0")}`,
+              digest: { sha256: hex(await sha256(utf8Encode(`artifact ${i}`))) },
+            },
           ],
+          predicate: {
+            issuedOn: issued.toISOString(),
+            validity: { notBefore: issued.toISOString(), notAfter: until.toISOString() },
+            claims: [
+              {
+                type: "https://github.com/test-org/claims/blob/main/docs/claims/publisher.md",
+                annotations: { publisher_id: publisher },
+              },
+              {
+                type: "https://github.com/test-org/claims/blob/main/docs/claims/workload.md",
+                annotations: { workload_id: `workload-${i % 4}`, version: `1.${i}` },
+              },
+              { type: "https://github.com/test-org/claims/blob/main/docs/claim/31543.md" },
+            ],
+          },
         },
-      }, null, 2);
+        null,
+        2,
+      );
       const content = utf8Encode(statement);
       const endorser = this.endorsers[i % 3 === 0 ? 1 : 0]!;
       const record = JSON.stringify({
@@ -160,7 +185,7 @@ export class TestLog {
       });
       this.entries.push(utf8Encode(record));
     }
-    this.leafHashes = concat(...await Promise.all(this.entries.map((e) => this.verifier.leafHash(e))));
+    this.leafHashes = concat(...(await Promise.all(this.entries.map((e) => this.verifier.leafHash(e)))));
   }
 
   /** A log with the same keys and the first `size` entries, to grow apart from this one. */
@@ -176,7 +201,7 @@ export class TestLog {
     const record = JSON.parse(Buffer.from(this.entries[index]!).toString());
     record.apiVersion = "0.0.2";
     this.entries[index] = utf8Encode(JSON.stringify(record));
-    this.leafHashes = concat(...await Promise.all(this.entries.map((e) => this.verifier.leafHash(e))));
+    this.leafHashes = concat(...(await Promise.all(this.entries.map((e) => this.verifier.leafHash(e)))));
   }
 
   /**
@@ -196,8 +221,14 @@ export class TestLog {
 
     for (const t of layout.tiles) {
       out.set(t.path, this.leafHashes.slice(t.first * 32, (t.first + t.width) * 32));
-      out.set(t.entries, concat(...this.entries.slice(t.first, t.first + t.width)
-        .flatMap((e) => [Uint8Array.of(e.length >> 8, e.length & 0xff), e])));
+      out.set(
+        t.entries,
+        concat(
+          ...this.entries
+            .slice(t.first, t.first + t.width)
+            .flatMap((e) => [Uint8Array.of(e.length >> 8, e.length & 0xff), e]),
+        ),
+      );
     }
     for (const t of interior) out.set(t.path, t.data);
     return out;
