@@ -22,3 +22,10 @@ jobs:
           disk-cache: ${{ github.workflow }}
           repository-cache: true
       - run: bazel test //...
+      # Every git-tracked file, with the formatters and settings of
+      # benbirt/bazel-style.
+      - name: Check formatting
+        run: bazel run //tools:format.check
+      # buildifier's lint checks over every Starlark file.
+      - name: Lint Starlark
+        run: bazel run //tools:lint

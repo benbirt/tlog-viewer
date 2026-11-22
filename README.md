@@ -44,6 +44,8 @@ elsewhere needs a change there and in the `connect-src` of `web/index.html`.
     bazel test //...          # type-check, unit tests, and the browser tests
     bazel run //:serve        # http://127.0.0.1:8080/
     bazel build //:site       # static site in bazel-bin/site
+    bazel run //tools:format  # format the code (CI runs //tools:format.check)
+    bazel run //tools:lint    # lint the Starlark files
 
 Everything to do with the transparency formats is done by their Go
 implementations, compiled to WebAssembly (`//verifier`):
