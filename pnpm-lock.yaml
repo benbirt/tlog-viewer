@@ -12,8 +12,8 @@ importers:
         specifier: 2.4.0
         version: 2.4.0
       jose:
-        specifier: 6.2.17
-        version: 6.2.17
+        specifier: 6.2.18
+        version: 6.2.18
     devDependencies:
       '@types/node':
         specifier: 24.19.2
@@ -158,8 +158,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  jose@6.2.17:
-    resolution: {integrity: sha512-wOuK9V1yujQFH5S0ZWmLcDZN7+IKh9bUCC2ZPCf2HDlol3WWHy+PPyNjEI75FXRLMp3vDKQcupP59xhVU95hcg==}
+  jose@6.2.18:
+    resolution: {integrity: sha512-doV4thUwgkrycJH4yLeqwTGIIZphHl+pk7CPReuMIhYhncmgzdko85MaCG4YQFTxqMFr1/oEH32tZuKKovcDEg==}
 
   playwright-core@1.65.1:
     resolution: {integrity: sha512-hqPpz7blSMPxWVdoeE1yiBSzXsKiVOd2k+kjCvmUywD2GPO2Dd9HfcWnq9NN0GHbNZDFgZ9JfBFr+X5/BLo0qw==}
@@ -246,7 +246,7 @@ snapshots:
   '@typescript/typescript-win32-x64@7.0.2':
     optional: true
 
-  jose@6.2.17: {}
+  jose@6.2.18: {}
 
   playwright-core@1.65.1: {}
 
