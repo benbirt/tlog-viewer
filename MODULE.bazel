@@ -16,7 +16,7 @@ bazel_dep(name = "rules_nodejs", version = "6.7.7")
 bazel_dep(name = "bazel_style", version = "0.0.0", dev_dependency = True)
 git_override(
     module_name = "bazel_style",
-    commit = "f7127ad68627f170db74a38743ef8e742b3a8828",
+    commit = "e5883cd6ee85947b00329c719e4d19c5794a5f96",
     remote = "https://github.com/benbirt/bazel-style.git",
 )
 
