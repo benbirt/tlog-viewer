@@ -180,7 +180,7 @@ once CI passes:
 | npm packages, Go modules, GitHub Actions      | Dependabot, merged by `dependabot-auto-merge.yaml` | weekly |
 
 `bazel-updates.yaml` calls the shared workflow in
-[benbirt/workflows](https://github.com/benbirt/workflows), which holds the
+[benbirt/github-infra](https://github.com/benbirt/github-infra), which holds the
 logic. `pages.yaml` deploys on every push to `main`, which includes those
 merges.
 

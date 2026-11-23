@@ -2,7 +2,7 @@ name: Bazel updates
 
 # Makes the updates that Dependabot cannot (Bazel, the Bazel modules, Node and
 # commit-pinned modules), each in its own pull request. The logic is in
-# benbirt/workflows; AUTOMATION_TOKEN opens the pull requests so that CI runs.
+# benbirt/github-infra; AUTOMATION_TOKEN opens the pull requests so that CI runs.
 
 on:
   schedule:
@@ -14,6 +14,6 @@ permissions:
 
 jobs:
   bazel-updates:
-    uses: benbirt/workflows/.github/workflows/bazel-updates.yml@de69053071842637255bbe8c0a6fa5eca77bf4da # v1.1.0
+    uses: benbirt/github-infra/.github/workflows/bazel-updates.yml@de69053071842637255bbe8c0a6fa5eca77bf4da # v1.1.0
     secrets:
       AUTOMATION_TOKEN: ${{ secrets.AUTOMATION_TOKEN }}
