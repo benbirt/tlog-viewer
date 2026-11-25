@@ -26,7 +26,7 @@ git_override(
 bazel_dep(name = "google-tlog-witness", version = "0.0.1", repo_name = "google_tlog_witness")
 git_override(
     module_name = "google-tlog-witness",
-    commit = "1703b90083b4084d70403d7601cd8b2e7a78c29b",
+    commit = "d276bf9b8dcf947c2eb3a38c96f60164a6cd470c",
     remote = "https://github.com/google/google-tlog-witness.git",
 )
 
